@@ -1,0 +1,54 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  
+  --color-bg: #F9FAFB;
+  --color-card: #FFFFFF;
+  --color-text-main: #111827;
+  --color-text-secondary: #6B7280;
+  --color-accent: #10B981;
+  --color-border: #E5E7EB;
+  --color-accent-light: #ECFDF5;
+  --color-accent-border: #D1FAE5;
+  --color-accent-dark: #065F46;
+}
+
+@layer base {
+  body {
+    @apply bg-bg text-text-main font-sans antialiased;
+  }
+}
+
+@layer components {
+  .category-card {
+    @apply bg-card border border-border rounded-3xl p-6 shadow-[0_8px_30px_rgb(0,0,0,0.04)] flex flex-col transition-all duration-300 hover:shadow-[0_20px_40px_rgba(0,0,0,0.06)];
+  }
+
+  @keyframes ring-pulse {
+    0% { ring-color: rgba(16, 185, 129, 0.2); ring-offset-width: 0px; }
+    50% { ring-color: rgba(16, 185, 129, 0.6); ring-offset-width: 4px; }
+    100% { ring-color: rgba(16, 185, 129, 0.2); ring-offset-width: 0px; }
+  }
+
+  .ring-pulse {
+    animation: ring-pulse 2s infinite;
+    @apply ring-4 ring-accent/20 transition-all;
+  }
+  
+  .item-row {
+    @apply flex items-center py-2.5 border-b border-gray-100 last:border-b-0;
+  }
+  
+  .checkbox {
+    @apply w-5 h-5 border-2 border-border rounded-md mr-3 shrink-0 transition-colors flex items-center justify-center;
+  }
+  
+  .checkbox.checked {
+    @apply bg-accent border-accent text-white;
+  }
+
+  .bottom-bar {
+    @apply mt-8 bg-card border border-border rounded-2xl p-4 flex items-center gap-4 shadow-sm;
+  }
+}

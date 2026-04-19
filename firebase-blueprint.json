@@ -1,0 +1,46 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Perfil de usuario sincronizado",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "displayName": { "type": "string" },
+        "familyId": { "type": "string" },
+        "photoURL": { "type": "string" }
+      },
+      "required": ["uid", "displayName", "familyId"]
+    },
+    "ShoppingList": {
+      "title": "ShoppingList",
+      "description": "Una lista de la compra grupal",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "familyId": { "type": "string" },
+        "color": { "type": "string" },
+        "isArchived": { "type": "boolean" }
+      },
+      "required": ["name", "familyId"]
+    },
+    "GroceryItem": {
+      "title": "GroceryItem",
+      "description": "Un producto en la lista",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "listId": { "type": "string" },
+        "familyId": { "type": "string" },
+        "checked": { "type": "boolean" },
+        "quantity": { "type": "string" }
+      },
+      "required": ["name", "listId", "familyId"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": { "schema": "UserProfile", "description": "Perfiles de usuario" },
+    "/lists/{listId}": { "schema": "ShoppingList", "description": "Listas de la compra" },
+    "/items/{itemId}": { "schema": "GroceryItem", "description": "Productos de las listas" }
+  }
+}
