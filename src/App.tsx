@@ -997,11 +997,11 @@ export default function App() {
               className={cn(
                 "flex items-center gap-2 px-6 py-3 rounded-2xl font-black uppercase tracking-widest text-[10px] transition-all shadow-lg active:scale-95",
                 shoppingMode 
-                  ? "bg-accent text-white shadow-accent/40" 
-                  : "bg-white border border-border text-text-main hover:bg-gray-50 shadow-black/5"
+                  ? "bg-white border border-border text-text-main hover:bg-gray-50 shadow-black/5" 
+                  : "bg-accent text-white shadow-accent/40"
               )}
             >
-              <Zap className={cn("w-3.5 h-3.5", shoppingMode && "fill-current")} />
+              <Zap className={cn("w-3.5 h-3.5", shoppingMode ? "text-accent fill-accent" : "fill-current")} />
               {shoppingMode ? 'Terminar' : 'Modo Tienda'}
             </button>
           </header>
