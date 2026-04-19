@@ -69,9 +69,11 @@ function cn(...inputs: ClassValue[]) {
 
 // --- Utils ---
 const generateShortId = () => {
+  // Usamos un set de caracteres muy legible (sin O, 0, I, 1)
   const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
   let result = '';
-  for (let i = 0; i < 15; i++) {
+  // Reducimos a 8 caracteres por defecto como pidió el usuario para que sea súper fácil
+  for (let i = 0; i < 8; i++) {
     result += chars.charAt(Math.floor(Math.random() * chars.length));
   }
   return result;
@@ -233,7 +235,17 @@ export default function App() {
           
           if (userDoc.exists()) {
             addLog("Perfil encontrado.");
-            setProfile(userDoc.data() as UserProfile);
+            const data = userDoc.data() as UserProfile;
+            
+            // AUTO-MIGRACIÓN: Si el código es el viejo (largo), lo actualizamos a 8 caracteres automáticamente
+            if (data.familyId && data.familyId.length > 15) {
+              const newShortId = generateShortId();
+              addLog(`Migrando código largo a nuevo código corto: ${newShortId}`);
+              updateDoc(userDocRef, { familyId: newShortId });
+              data.familyId = newShortId;
+            }
+            
+            setProfile(data);
           } else {
             addLog("Usuario nuevo (sin perfil en DB).");
             setProfile(null);
