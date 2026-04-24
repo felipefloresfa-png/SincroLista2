@@ -886,7 +886,7 @@ export default function App() {
   );
 
   return (
-    <div className={cn("min-h-screen bg-bg overflow-x-hidden transition-colors duration-500", shoppingMode && "bg-gray-950")}>
+    <div className={cn("min-h-[100dvh] bg-bg overflow-x-hidden transition-colors duration-500", shoppingMode && "bg-gray-950")}>
       
       {/* Mobile Header Overlay */}
       <div className={cn(
@@ -894,21 +894,21 @@ export default function App() {
         isSidebarOpen ? "opacity-100" : "opacity-0 pointer-events-none"
       )} onClick={() => setIsSidebarOpen(false)} />
 
-      <div className="max-w-7xl mx-auto flex flex-col lg:flex-row min-h-screen relative">
+      <div className="max-w-7xl mx-auto flex flex-col lg:flex-row min-h-[100dvh] relative">
         
-        {/* Floating Debug Logs Overlay */}
-        <div className="fixed bottom-24 left-4 z-50 pointer-events-none max-w-[200px] sm:max-w-xs">
-          <div className="bg-black/80 backdrop-blur-md p-3 rounded-2xl border border-white/10 shadow-2xl pointer-events-auto">
-            <h4 className="text-[8px] font-black uppercase text-white/40 mb-2 tracking-tighter flex items-center justify-between">
-              Logs del Sistema
-              <span className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse"></span>
+        {/* Floating Debug Logs Overlay - Repositioned to Top on Mobile */}
+        <div className="fixed top-20 right-4 lg:bottom-24 lg:top-auto lg:left-4 z-50 pointer-events-none max-w-[150px] sm:max-w-xs transition-all">
+          <div className="bg-black/80 backdrop-blur-md p-2 lg:p-3 rounded-xl border border-white/10 shadow-2xl pointer-events-auto">
+            <h4 className="text-[8px] font-black uppercase text-white/40 mb-1 lg:mb-2 tracking-tighter flex items-center justify-between">
+              Logs
+              <span className="w-1 h-1 lg:w-1.5 lg:h-1.5 rounded-full bg-green-500 animate-pulse"></span>
             </h4>
-            <div className="space-y-1 max-h-40 overflow-y-auto scrollbar-hide">
+            <div className="space-y-1 max-h-24 lg:max-h-40 overflow-y-auto scrollbar-hide">
               {debugLogs.length === 0 ? (
-                <p className="text-[8px] text-white/20 italic">Esperando eventos...</p>
+                <p className="text-[7px] lg:text-[8px] text-white/20 italic">...</p>
               ) : (
-                debugLogs.map((log, i) => (
-                  <p key={i} className="text-[9px] font-mono text-green-400/80 break-words leading-tight">{log}</p>
+                debugLogs.slice(-6).map((log, i) => (
+                  <p key={i} className="text-[8px] lg:text-[9px] font-mono text-green-400/80 break-words leading-none lg:leading-tight">{log}</p>
                 ))
               )}
             </div>
@@ -1290,7 +1290,7 @@ export default function App() {
 
           {/* Sticky Input Area inside Main for proper centering */}
           {!shoppingMode && (
-            <div className="fixed bottom-0 left-0 lg:left-[280px] right-0 p-3 lg:p-6 z-40 flex justify-center pointer-events-none">
+            <div className="fixed bottom-0 left-0 lg:left-[280px] right-0 p-3 lg:p-6 z-40 flex justify-center pointer-events-none pb-[env(safe-area-inset-bottom,12px)]">
               <div className="w-full max-w-xl pointer-events-auto">
                  <form 
                    onSubmit={(e) => { e.preventDefault(); addItem(newItemName, newItemQty); }}
