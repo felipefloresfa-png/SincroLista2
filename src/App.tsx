@@ -59,7 +59,8 @@ import {
   Pencil,
   Copy,
   MessageCircle,
-  Mail
+  Mail,
+  Menu
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { analyzeItem, getSmartRecommendations, ItemInfo } from './lib/gemini';
@@ -951,7 +952,7 @@ export default function App() {
         
         {/* Sidebar */}
         <aside className={cn(
-          "fixed lg:sticky top-0 left-0 z-50 h-screen w-[280px] bg-white border-r border-border p-6 transition-transform flex flex-col shrink-0 overflow-y-auto",
+          "fixed lg:sticky top-0 left-0 z-50 h-[100dvh] w-[280px] bg-white border-r border-border p-6 transition-transform flex flex-col shrink-0 overflow-y-auto scrollbar-hide",
           shoppingMode && "lg:opacity-40 lg:pointer-events-none",
           isSidebarOpen ? "translate-x-0" : "-translate-x-full lg:translate-x-0"
         )}>
@@ -962,7 +963,7 @@ export default function App() {
             <h1 className="font-bold text-xl tracking-tight text-text-main">SincroLista</h1>
           </div>
 
-          <div className="flex-grow space-y-8">
+          <div className="flex-grow space-y-8 pb-4">
             {/* List Selector */}
             <div>
               <div className="flex items-center justify-between mb-3">
@@ -1049,7 +1050,7 @@ export default function App() {
             </div>
           </div>
 
-          <div className="mt-8 space-y-2">
+          <div className="mt-8 space-y-2 pb-8">
             <button 
               onClick={() => { setIsSettingsOpen(true); setIsSidebarOpen(false); }} 
               className="w-full flex items-center gap-3 px-3 py-2.5 text-text-secondary hover:bg-gray-50 rounded-xl transition-colors font-semibold text-sm group"
@@ -1070,17 +1071,25 @@ export default function App() {
         <main className="flex-grow p-4 md:p-8 lg:p-12 space-y-8 min-w-0 pb-32 relative">
           
           {/* Top Bar Mobile */}
-          <div className="lg:hidden flex justify-between items-center mb-4">
-            <button onClick={() => setIsSidebarOpen(true)} className="p-1.5 bg-white border border-border rounded-lg shadow-sm">
-              <ListIcon className="w-5 h-5 text-text-main" />
+          <div className="lg:hidden flex items-center justify-between mb-4 gap-2">
+            <button onClick={() => setIsSidebarOpen(true)} className="p-2 bg-white border border-border rounded-xl shadow-sm active:scale-95 transition-all">
+              <Menu className="w-5 h-5 text-text-main" />
             </button>
-            <div className="text-center px-4 leading-tight">
-              <h2 className={cn("text-base font-black truncate max-w-[150px]", shoppingMode && "text-white")}>{activeList?.name}</h2>
+            <div className="flex-grow text-center px-2 leading-tight">
+              <h2 className={cn("text-base font-black truncate", shoppingMode && "text-white")}>{activeList?.name}</h2>
               <p className="text-[9px] text-accent uppercase font-black tracking-widest">Sincrolista</p>
             </div>
-            <button onClick={() => setShoppingMode(!shoppingMode)} className={cn("p-1.5 rounded-lg shadow-sm border border-border", shoppingMode ? "bg-accent text-white" : "bg-white")}>
-              <Zap className="w-5 h-5" />
-            </button>
+            <div className="flex items-center gap-1.5">
+              <button 
+                onClick={() => setIsSettingsOpen(true)}
+                className="w-9 h-9 rounded-full overflow-hidden border-2 border-accent/20 p-0.5 active:scale-95 transition-all"
+              >
+                <img src={profile?.photoURL} className="w-full h-full rounded-full object-cover" />
+              </button>
+              <button onClick={() => setShoppingMode(!shoppingMode)} className={cn("p-2 rounded-xl shadow-sm border transition-all active:scale-95", shoppingMode ? "bg-accent text-white border-accent" : "bg-white border-border text-text-secondary")}>
+                <Zap className="w-5 h-5" />
+              </button>
+            </div>
           </div>
 
            <header className="hidden lg:flex items-center justify-between mb-4">
