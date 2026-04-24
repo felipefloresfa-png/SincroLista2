@@ -267,9 +267,11 @@ export default function App() {
 
   useEffect(() => {
     const handleScroll = () => {
-      setIsScrolled(window.scrollY > 20);
+      // Usar tanto scrollY como documentElement.scrollTop para máxima compatibilidad
+      const scrollPos = window.scrollY || document.documentElement.scrollTop;
+      setIsScrolled(scrollPos > 30);
     };
-    window.addEventListener('scroll', handleScroll);
+    window.addEventListener('scroll', handleScroll, { passive: true });
     return () => window.removeEventListener('scroll', handleScroll);
   }, []);
   
@@ -998,7 +1000,7 @@ export default function App() {
   );
 
   return (
-    <div className={cn("min-h-[100dvh] bg-bg overflow-x-hidden transition-colors duration-500", shoppingMode && "bg-gray-950")}>
+    <div className={cn("min-h-[100dvh] bg-bg transition-colors duration-500", shoppingMode && "bg-gray-950")}>
       
       {/* Mobile Header Overlay */}
       <div className={cn(
@@ -1126,17 +1128,19 @@ export default function App() {
         </aside>
 
         {/* Main Content Area */}
-        <main className="flex-grow min-w-0 relative">
+        <main className="flex-grow min-w-0 relative overflow-visible">
           
           {/* Header & Search Persistent - Sticky on Mobile */}
           <div className={cn(
-            "sticky top-0 z-[60] bg-gray-50/90 backdrop-blur-xl transition-all duration-300 lg:static lg:bg-transparent lg:backdrop-blur-none lg:p-0 lg:mx-0 lg:border-none",
-            isScrolled ? "p-3 border-b border-border/50 shadow-sm" : "p-4 md:p-8 lg:p-12 pb-4"
+            "sticky top-0 z-[100] transition-all duration-300 lg:static lg:bg-transparent lg:backdrop-blur-none lg:p-0 lg:mx-0 lg:border-none",
+            isScrolled 
+              ? "bg-white p-2 px-4 border-b border-border shadow-lg -mx-4 md:-mx-8" 
+              : "bg-transparent p-4 md:p-8 lg:p-12 pb-4"
           )}>
             {/* Top Bar Mobile (Hides on scroll to save space) */}
             <div className={cn(
               "lg:hidden flex items-center justify-between gap-2 overflow-hidden transition-all duration-300 transform-gpu",
-              isScrolled ? "h-0 opacity-0 mb-0 scale-y-0" : "h-auto opacity-100 mb-4 scale-y-100"
+              isScrolled ? "h-0 opacity-0 mb-0 scale-95" : "h-auto opacity-100 mb-4 scale-100"
             )}>
               <button onClick={() => setIsSidebarOpen(true)} className="p-2 bg-white border border-border rounded-xl shadow-sm active:scale-95 transition-all">
                 <Menu className="w-5 h-5 text-text-main" />
@@ -1197,8 +1201,8 @@ export default function App() {
 
             {/* In-header Search bar for persistence */}
             <div className={cn(
-              "relative group transition-all duration-300 ease-out",
-              isScrolled ? "max-w-md mx-auto" : "w-full"
+              "relative group transition-all duration-300",
+              isScrolled ? "max-w-2xl mx-auto" : "w-full"
             )}>
               <div className={cn(
                 "absolute left-4 top-1/2 -translate-y-1/2 text-gray-400 group-focus-within:text-accent transition-all",
@@ -1210,10 +1214,10 @@ export default function App() {
                 type="text"
                 value={searchQuery}
                 onChange={e => setSearchQuery(e.target.value)}
-                placeholder={isScrolled ? "Buscar..." : "Busca productos o pasillos..."}
+                placeholder={isScrolled ? "Buscar productos..." : "Busca productos o pasillos..."}
                 className={cn(
-                  "w-full bg-white border border-border rounded-2xl pl-11 pr-4 font-bold text-text-main placeholder:text-gray-400 focus:ring-4 focus:ring-accent/10 focus:border-accent outline-none transition-all shadow-sm shadow-black/5",
-                  isScrolled ? "py-2.5 text-xs h-10" : "py-3.5 text-sm h-12"
+                  "w-full bg-white border rounded-2xl pl-11 pr-4 font-bold text-text-main placeholder:text-gray-400 focus:ring-4 focus:ring-accent/10 focus:border-accent outline-none transition-all shadow-sm",
+                  isScrolled ? "py-2 text-xs h-9 border-border/60" : "py-3.5 text-sm h-12 border-border shadow-black/5"
                 )}
               />
               {searchQuery && (
