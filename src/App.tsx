@@ -516,12 +516,18 @@ export default function App() {
     try {
       setIsFetchingRecs(true);
       const history = activities.map(a => a.itemName).filter(Boolean);
-      addLog("Actualizando sugerencias...");
-      const recs = await getSmartRecommendations(history);
+      addLog(`IA Recs: Consultando con historial de ${history.length} items...`);
+      
+      const recsPromise = getSmartRecommendations(history);
+      const timeoutPromise = new Promise<string[]>((_, reject) => 
+        setTimeout(() => reject(new Error("Timeout (25s)")), 25000)
+      );
+      
+      const recs = await Promise.race([recsPromise, timeoutPromise]);
       setRecommendations(recs);
-      addLog(`Sugerencias cargadas: ${recs.length}`);
-    } catch (e) {
-      addLog("Fallo al cargar sugerencias.");
+      addLog(`IA Recs Éxito: ${recs.length} sugerencias`);
+    } catch (e: any) {
+      addLog(`IA Recs Fallo: ${e.message || "Error desconocido"}`);
     } finally {
       setIsFetchingRecs(false);
     }
@@ -611,7 +617,7 @@ export default function App() {
         addLog(`IA: Analizando "${name}"...`);
         try {
           const analysisPromise = analyzeItem(name);
-          const timeoutPromise = new Promise<any>((_, reject) => setTimeout(() => reject(new Error("Timeout (5s)")), 5000));
+          const timeoutPromise = new Promise<any>((_, reject) => setTimeout(() => reject(new Error("Timeout (12s)")), 12000));
           analysis = await Promise.race([analysisPromise, timeoutPromise]);
           addLog(`IA Éxito: -> ${analysis.category}`);
         } catch (iaError: any) {
@@ -1098,36 +1104,56 @@ export default function App() {
           )}
 
           {/* AI Suggestions Bar */}
-          {!shoppingMode && recommendations.length > 0 && (
+          {!shoppingMode && (
             <div className="space-y-2">
-              <div className="flex items-center gap-2 text-text-secondary">
-                <MessageSquare className="w-3 h-3 text-accent" />
-                <p className="text-[10px] font-black uppercase tracking-widest leading-none">
-                  {activities.length < 5 
-                    ? "Sugerencias:" 
-                    : "Suele comprar:"}
-                </p>
+              <div className="flex items-center justify-between text-text-secondary">
+                <div className="flex items-center gap-2">
+                  <MessageSquare className="w-3 h-3 text-accent" />
+                  <p className="text-[10px] font-black uppercase tracking-widest leading-none">
+                    {activities.length < 5 
+                      ? "Sugerencias:" 
+                      : "Suele comprar:"}
+                  </p>
+                </div>
+                {recommendations.length === 0 && !isFetchingRecs && (
+                  <button 
+                    onClick={() => fetchRecommendations()}
+                    className="text-[9px] font-bold text-accent hover:underline flex items-center gap-1"
+                  >
+                    <RefreshCw className={cn("w-2.5 h-2.5", isFetchingRecs && "animate-spin")} /> Reintentar
+                  </button>
+                )}
               </div>
-              <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} className="flex overflow-x-auto gap-1.5 pb-1 scrollbar-none">
-                <AnimatePresence mode="popLayout">
-                  {recommendations.slice(0, 6).map(rec => (
-                    <motion.button 
-                      key={rec}
-                      layout
-                      initial={{ opacity: 0, scale: 0.8 }}
-                      animate={{ opacity: 1, scale: 1 }}
-                      exit={{ opacity: 0, scale: 0.8 }}
-                      onClick={() => {
-                        addItem(rec);
-                        setRecommendations(prev => prev.filter(r => r !== rec));
-                      }}
-                      className="shrink-0 bg-white border border-border px-3 py-1.5 rounded-lg text-[10px] font-bold text-text-main hover:border-accent hover:text-accent hover:bg-accent/5 transition-all flex items-center gap-1.5 shadow-xs active:scale-95"
-                    >
-                      <Plus className="w-3 h-3" /> {rec}
-                    </motion.button>
-                  ))}
-                </AnimatePresence>
-              </motion.div>
+              
+              {recommendations.length > 0 ? (
+                <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} className="flex overflow-x-auto gap-1.5 pb-1 scrollbar-none">
+                  <AnimatePresence mode="popLayout">
+                    {recommendations.slice(0, 8).map(rec => (
+                      <motion.button 
+                        key={rec}
+                        layout
+                        initial={{ opacity: 0, scale: 0.8 }}
+                        animate={{ opacity: 1, scale: 1 }}
+                        exit={{ opacity: 0, scale: 0.8 }}
+                        onClick={() => {
+                          addItem(rec);
+                          setRecommendations(prev => prev.filter(r => r !== rec));
+                        }}
+                        className="shrink-0 bg-white border border-border px-3 py-1.5 rounded-lg text-[10px] font-bold text-text-main hover:border-accent hover:text-accent hover:bg-accent/5 transition-all flex items-center gap-1.5 shadow-xs active:scale-95"
+                      >
+                        <Plus className="w-3 h-3" /> {rec}
+                      </motion.button>
+                    ))}
+                  </AnimatePresence>
+                </motion.div>
+              ) : (
+                isFetchingRecs && (
+                  <div className="flex items-center gap-2 py-2">
+                    <div className="w-2 h-2 rounded-full bg-accent animate-ping" />
+                    <span className="text-[10px] text-gray-400 font-medium italic">Consultando a la IA...</span>
+                  </div>
+                )
+              )}
             </div>
           )}
 
