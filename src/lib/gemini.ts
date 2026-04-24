@@ -10,6 +10,13 @@ export interface ItemInfo {
 }
 
 export async function analyzeItem(itemName: string): Promise<ItemInfo> {
+  const keyStatus = process.env.GEMINI_API_KEY ? "Presente" : "AUSENTE";
+  console.log(`[IA] Analizando: ${itemName} (Key: ${keyStatus})`);
+  
+  if (!process.env.GEMINI_API_KEY) {
+    throw new Error("Falta la GEMINI_API_KEY en las variables de entorno.");
+  }
+
   try {
     const response = await ai.models.generateContent({
       model: "gemini-3-flash-preview",
@@ -50,6 +57,13 @@ export async function analyzeItem(itemName: string): Promise<ItemInfo> {
 }
 
 export async function getSmartRecommendations(history: string[]) {
+  console.log(`[IA] Generando recomendaciones (History size: ${history.length})`);
+  
+  if (!process.env.GEMINI_API_KEY) {
+    console.warn("IA: GEMINI_API_KEY no detectada. Usando recomendaciones por defecto.");
+    return ["Leche", "Huevos", "Pan", "Fruta", "Papel Higiénico", "Arroz", "Aceite", "Azúcar", "Sal", "Café", "Té", "Pasta"];
+  }
+
   try {
     const isHistoryEmpty = history.length === 0;
     const prompt = isHistoryEmpty 

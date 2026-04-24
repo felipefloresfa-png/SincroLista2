@@ -219,6 +219,9 @@ export default function App() {
   // Auth & Profile
   useEffect(() => {
     addLog("Configurando receptor de autenticación...");
+    const keyStatus = process.env.GEMINI_API_KEY ? "Detectada" : "FALTA";
+    addLog(`Salud IA: LLave ${keyStatus}`);
+    
     const unsub = onAuthStateChanged(auth, async (u) => {
       addLog(`Estado Auth: ${u ? 'Sesión activa (' + u.uid.substring(0,5) + '...)' : 'Sin sesión'}`);
       setUser(u);
@@ -594,9 +597,15 @@ export default function App() {
       
       if (!analysis || !analysis.category || analysis.category === 'Otros') {
         addLog("Consultando IA para nuevo producto...");
-        const analysisPromise = analyzeItem(name);
-        const timeoutPromise = new Promise<any>((resolve) => setTimeout(() => resolve({ category: 'Otros', priorityLevel: 'medium' }), 2000));
-        analysis = await Promise.race([analysisPromise, timeoutPromise]);
+        try {
+          const analysisPromise = analyzeItem(name);
+          const timeoutPromise = new Promise<any>((_, reject) => setTimeout(() => reject(new Error("Timeout IA")), 5000));
+          analysis = await Promise.race([analysisPromise, timeoutPromise]);
+          addLog(`IA respondiendo: ${analysis.category}`);
+        } catch (iaError: any) {
+          addLog(`IA Error: ${iaError.message || "Fallo desconocido"}`);
+          analysis = { category: 'Otros', priorityLevel: 'medium' };
+        }
       }
       
       const itemData = {
@@ -647,6 +656,24 @@ export default function App() {
       return;
     }
     await updateDoc(doc(db, 'items', item.id), { category: newCategory.trim() });
+    setPromptConfig(prev => ({ ...prev, isOpen: false }));
+  };
+
+  const updateItemName = async (item: GroceryItem, newName: string) => {
+    if (!newName || !newName.trim()) {
+      setPromptConfig(prev => ({ ...prev, isOpen: false }));
+      return;
+    }
+    await updateDoc(doc(db, 'items', item.id), { name: newName.trim() });
+    setPromptConfig(prev => ({ ...prev, isOpen: false }));
+  };
+
+  const updateItemQty = async (item: GroceryItem, newQty: string) => {
+    if (!newQty || !newQty.trim()) {
+      setPromptConfig(prev => ({ ...prev, isOpen: false }));
+      return;
+    }
+    await updateDoc(doc(db, 'items', item.id), { quantity: newQty.trim() });
     setPromptConfig(prev => ({ ...prev, isOpen: false }));
   };
 
@@ -1114,6 +1141,15 @@ export default function App() {
                         item={item} 
                         onToggle={() => toggleItem(item)} 
                         onDelete={() => deleteItem(item)} 
+                        onEdit={() => {
+                          setPromptConfig({
+                            isOpen: true,
+                            title: `Editar "${item.name}"`,
+                            description: "Cambia el nombre del producto:",
+                            initialValue: item.name,
+                            onConfirm: (val) => updateItemName(item, val)
+                          });
+                        }}
                         onTogglePriority={() => togglePriority(item)}
                         onUpdateCategory={() => {
                           setPromptConfig({
@@ -1122,6 +1158,15 @@ export default function App() {
                             description: "Escribe el nombre del nuevo pasillo:",
                             initialValue: item.category,
                             onConfirm: (val) => updateItemCategory(item, val)
+                          });
+                        }}
+                        onUpdateQty={() => {
+                          setPromptConfig({
+                            isOpen: true,
+                            title: `Cantidad para "${item.name}"`,
+                            description: "Cambia la cantidad del producto:",
+                            initialValue: item.quantity,
+                            onConfirm: (val) => updateItemQty(item, val)
                           });
                         }}
                         shoppingMode={shoppingMode} 
@@ -1203,18 +1248,25 @@ export default function App() {
                    <input 
                      value={newItemName}
                      onChange={e => setNewItemName(e.target.value)}
-                     placeholder="¿Qué falta?"
-                     className="flex-grow bg-transparent border-none outline-hidden px-2 text-sm font-bold text-text-main placeholder:text-gray-400 placeholder:font-medium"
+                     placeholder="¿Qué Falta?"
+                     className="flex-grow min-w-0 bg-transparent border-none outline-none px-2 text-sm font-bold text-text-main placeholder:text-gray-400 placeholder:font-medium"
                      disabled={isAdding}
                    />
-                   <div className="flex items-center bg-gray-50 rounded-xl px-3 py-1.5 border border-border shrink-0">
-                     <span className="text-[8px] font-black text-gray-400 uppercase mr-2">Cant</span>
-                     <input 
-                       value={newItemQty}
-                       onChange={e => setNewItemQty(e.target.value)}
-                       className="w-8 text-center bg-transparent border-none font-black text-xs outline-hidden text-text-main"
-                       disabled={isAdding}
-                     />
+                   <div className="flex items-center bg-gray-100 rounded-xl px-2 py-1.5 border border-border/50 shrink-0 relative transition-colors focus-within:bg-gray-200">
+                     <span className="text-[8px] font-black text-gray-400 uppercase mr-1 hidden min-[400px]:inline">Cant</span>
+                     <div className="relative flex items-center">
+                       <select 
+                         value={newItemQty}
+                         onChange={e => setNewItemQty(e.target.value)}
+                         className="bg-transparent border-none font-black text-xs outline-none text-text-main cursor-pointer appearance-none pr-4 py-0"
+                         disabled={isAdding}
+                       >
+                         {[1,2,3,4,5,6,7,8,9,10].map(n => (
+                           <option key={n} value={String(n)}>{n}</option>
+                         ))}
+                       </select>
+                       <ChevronDown className="w-3 h-3 text-gray-400 absolute right-0 pointer-events-none" />
+                     </div>
                    </div>
                    <button 
                      type="submit"
@@ -1318,12 +1370,14 @@ interface ItemRowProps {
   item: GroceryItem;
   onToggle: () => void | Promise<void>;
   onDelete: () => void | Promise<void>;
+  onEdit: () => void | Promise<void>;
+  onUpdateQty: () => void | Promise<void>;
   onTogglePriority: () => void | Promise<void>;
   onUpdateCategory: () => void | Promise<void>;
   shoppingMode: boolean;
 }
 
-function ItemRow({ item, onToggle, onDelete, onTogglePriority, onUpdateCategory, shoppingMode }: ItemRowProps) {
+function ItemRow({ item, onToggle, onDelete, onEdit, onUpdateQty, onTogglePriority, onUpdateCategory, shoppingMode }: ItemRowProps) {
   return (
     <div className={cn(
       "flex items-center gap-1.5 p-1.5 rounded-xl transition-all grow group relative",
@@ -1366,13 +1420,25 @@ function ItemRow({ item, onToggle, onDelete, onTogglePriority, onUpdateCategory,
         {item.notes && <p className="text-[9px] text-text-secondary mt-0.5">{item.notes}</p>}
       </div>
 
-      <div className="flex items-center gap-2 shrink-0">
-        <span className={cn(
-          "text-[9px] font-black px-2 py-0.5 rounded-lg uppercase tracking-widest tabular-nums border",
-          shoppingMode ? "bg-gray-800 text-gray-400 border-gray-700" : "bg-white text-text-secondary border-border shadow-xs"
-        )}>
+      <div className="flex items-center gap-1 shrink-0">
+        {!shoppingMode && (
+          <button 
+            onClick={onEdit}
+            className="lg:opacity-0 group-hover:opacity-100 p-1.5 hover:bg-gray-100 text-gray-300 hover:text-text-main rounded-lg transition-all"
+            title="Editar nombre"
+          >
+            <Pencil className="w-3 h-3" />
+          </button>
+        )}
+        <button 
+          onClick={onUpdateQty}
+          className={cn(
+            "text-[9px] font-black px-2 py-0.5 rounded-lg uppercase tracking-widest tabular-nums border hover:scale-105 active:scale-95 transition-all",
+            shoppingMode ? "bg-gray-800 text-gray-400 border-gray-700" : "bg-white text-text-secondary border-border shadow-xs hover:border-accent hover:text-accent"
+          )}
+        >
           {item.quantity}
-        </span>
+        </button>
         {!shoppingMode && (
           <button 
             onClick={onDelete}
