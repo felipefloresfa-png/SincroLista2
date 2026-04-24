@@ -896,25 +896,6 @@ export default function App() {
 
       <div className="max-w-7xl mx-auto flex flex-col lg:flex-row min-h-[100dvh] relative">
         
-        {/* Floating Debug Logs Overlay - Repositioned to Top on Mobile */}
-        <div className="fixed top-20 right-4 lg:bottom-24 lg:top-auto lg:left-4 z-50 pointer-events-none max-w-[150px] sm:max-w-xs transition-all">
-          <div className="bg-black/80 backdrop-blur-md p-2 lg:p-3 rounded-xl border border-white/10 shadow-2xl pointer-events-auto">
-            <h4 className="text-[8px] font-black uppercase text-white/40 mb-1 lg:mb-2 tracking-tighter flex items-center justify-between">
-              Logs
-              <span className="w-1 h-1 lg:w-1.5 lg:h-1.5 rounded-full bg-green-500 animate-pulse"></span>
-            </h4>
-            <div className="space-y-1 max-h-24 lg:max-h-40 overflow-y-auto scrollbar-hide">
-              {debugLogs.length === 0 ? (
-                <p className="text-[7px] lg:text-[8px] text-white/20 italic">...</p>
-              ) : (
-                debugLogs.slice(-6).map((log, i) => (
-                  <p key={i} className="text-[8px] lg:text-[9px] font-mono text-green-400/80 break-words leading-none lg:leading-tight">{log}</p>
-                ))
-              )}
-            </div>
-          </div>
-        </div>
-
         {/* Sidebar */}
         <aside className={cn(
           "fixed lg:sticky top-0 left-0 z-50 h-screen w-[280px] bg-white border-r border-border p-6 transition-transform flex flex-col shrink-0 overflow-y-auto",
