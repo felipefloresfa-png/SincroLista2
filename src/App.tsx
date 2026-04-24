@@ -1080,12 +1080,6 @@ export default function App() {
               <p className="text-[9px] text-accent uppercase font-black tracking-widest">Sincrolista</p>
             </div>
             <div className="flex items-center gap-1.5">
-              <button 
-                onClick={() => setIsSettingsOpen(true)}
-                className="w-9 h-9 rounded-full overflow-hidden border-2 border-accent/20 p-0.5 active:scale-95 transition-all"
-              >
-                <img src={profile?.photoURL} className="w-full h-full rounded-full object-cover" />
-              </button>
               <button onClick={() => setShoppingMode(!shoppingMode)} className={cn("p-2 rounded-xl shadow-sm border transition-all active:scale-95", shoppingMode ? "bg-accent text-white border-accent" : "bg-white border-border text-text-secondary")}>
                 <Zap className="w-5 h-5" />
               </button>
@@ -1289,56 +1283,13 @@ export default function App() {
           </div>
 
           {items.length === 0 && (
-             <div className="py-20 text-center space-y-6">
-                <div className="opacity-20">
-                  <ShoppingBasket className="w-20 h-20 mx-auto mb-4" />
-                  <p className="text-xl font-bold">La lista está vacía</p>
-                  <p className="text-sm">Si has agregado productos y no aparecen, intenta recargar.</p>
+              <div className="py-24 text-center space-y-4">
+                <div className="opacity-30">
+                  <ShoppingBasket className="w-16 h-16 mx-auto mb-4 text-accent" />
+                  <p className="text-lg font-black text-text-main">La lista está vacía</p>
+                  <p className="text-xs text-text-secondary font-medium">Agrega productos usando el campo de abajo</p>
                 </div>
-                <button 
-                  onClick={async () => {
-                    addLog("Probando escritura...");
-                    try {
-                      const testRef = doc(db, 'test_connection', 'write_test');
-                      await setDoc(testRef, { lastTest: serverTimestamp(), user: auth.currentUser?.uid });
-                      addLog("✅ EXITO: Escritura permitida.");
-                      alert("¡Conexión exitosa! Ahora intenta agregar un producto.");
-                    } catch (e: any) {
-                      addLog(`❌ FALLO: ${e.code}`);
-                      alert(`Error: ${e.code}. Sigue las instrucciones para abrir las reglas.`);
-                    }
-                  }}
-                  className="px-6 py-3 bg-accent text-white rounded-2xl text-xs font-bold hover:bg-accent-dark flex items-center gap-2 mx-auto shadow-sm"
-                >
-                  <RefreshCw className="w-4 h-4" /> Probar Conexión (Escritura)
-                </button>
-
-                <button 
-                  onClick={() => {
-                    const info = `Project: ${firebaseConfig.projectId}\nAuth: ${auth.currentUser?.uid || 'No user'}\nDBID: ${firebaseConfig.firestoreDatabaseId}\nHost: ${window.location.hostname}`;
-                    navigator.clipboard.writeText(info);
-                    alert("Configuración copiada. Pégala aquí.");
-                  }}
-                  className="text-[10px] text-text-secondary underline opacity-70 mt-2 block mx-auto"
-                >
-                  Diagnóstico Técnico (Copiar Config)
-                </button>
-                
-                {/* Visual logs for in-app debugging */}
-                <div className="max-w-xs mx-auto mt-10">
-                   <div className="bg-black/90 p-4 rounded-2xl text-left border border-white/10 shadow-2xl">
-                    <h4 className="text-[9px] font-black uppercase text-white/40 mb-2 tracking-tighter flex items-center justify-between">
-                      Logs de Conexión
-                      <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse"></span>
-                    </h4>
-                    <div className="space-y-1">
-                      {debugLogs.map((log, i) => (
-                        <p key={i} className="text-[10px] font-mono text-green-400/90 break-words leading-tight">{log}</p>
-                      ))}
-                    </div>
-                  </div>
-                </div>
-             </div>
+              </div>
           )}
 
           {/* Sticky Input Area inside Main for proper centering */}
