@@ -263,6 +263,15 @@ export default function App() {
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [loading, setLoading] = useState(false); // Used for other global loading states if needed
+  const [isScrolled, setIsScrolled] = useState(false);
+
+  useEffect(() => {
+    const handleScroll = () => {
+      setIsScrolled(window.scrollY > 20);
+    };
+    window.addEventListener('scroll', handleScroll);
+    return () => window.removeEventListener('scroll', handleScroll);
+  }, []);
   
   // Dialog State
   const [promptConfig, setPromptConfig] = useState<{
@@ -271,7 +280,7 @@ export default function App() {
     description?: string;
     initialValue: string;
     placeholder?: string;
-    type?: 'input' | 'confirm';
+    type?: 'input' | 'confirm' | 'quantity';
     onConfirm: (val: string) => void;
     onCategorySelect?: (cat: string) => void;
   }>({
@@ -1104,64 +1113,104 @@ export default function App() {
         {/* Main Content Area */}
         <main className="flex-grow p-4 md:p-8 lg:p-12 space-y-8 min-w-0 pb-32 relative">
           
-          {/* Top Bar Mobile */}
-          <div className="lg:hidden flex items-center justify-between mb-4 gap-2">
-            <button onClick={() => setIsSidebarOpen(true)} className="p-2 bg-white border border-border rounded-xl shadow-sm active:scale-95 transition-all">
-              <Menu className="w-5 h-5 text-text-main" />
-            </button>
-            <div className="flex-grow text-center px-2 leading-tight">
-              <h2 className={cn("text-base font-black truncate", shoppingMode && "text-white")}>{activeList?.name}</h2>
-              <p className="text-[9px] text-accent uppercase font-black tracking-widest">Sincrolista</p>
-            </div>
-            <div className="flex items-center gap-1.5">
-              <button onClick={() => setShoppingMode(!shoppingMode)} className={cn("p-2 rounded-xl shadow-sm border transition-all active:scale-95", shoppingMode ? "bg-accent text-white border-accent" : "bg-white border-border text-text-secondary")}>
-                <Zap className="w-5 h-5" />
+          {/* Header & Search Persistent - Sticky on Mobile */}
+          <div className={cn(
+            "sticky top-0 z-[60] bg-gray-50/95 backdrop-blur-xl -mx-4 px-4 pt-4 md:-mx-8 md:px-8 transition-all lg:static lg:bg-transparent lg:backdrop-blur-none lg:p-0 lg:mx-0 lg:border-none",
+            isScrolled ? "pb-3 border-b border-border/50 shadow-sm" : "pb-4"
+          )}>
+            {/* Top Bar Mobile (Hides on scroll to save space) */}
+            <div className={cn(
+              "lg:hidden flex items-center justify-between gap-2 overflow-hidden transition-all duration-300 origin-top",
+              isScrolled ? "h-0 opacity-0 mb-0 scale-y-0" : "h-auto opacity-100 mb-4 scale-y-100"
+            )}>
+              <button onClick={() => setIsSidebarOpen(true)} className="p-2 bg-white border border-border rounded-xl shadow-sm active:scale-95 transition-all">
+                <Menu className="w-5 h-5 text-text-main" />
               </button>
-            </div>
-          </div>
-
-           <header className="hidden lg:flex items-center justify-between mb-4">
-            <div className="flex flex-col">
-              <h2 className={cn("text-3xl font-black tracking-tighter transition-colors", shoppingMode ? "text-white" : "text-text-main")}>
-                {activeList?.name || 'Cargando...'}
-              </h2>
-              <div className="flex items-center gap-2 mt-1.5">
-                <div className="flex -space-x-1 mr-2">
-                   {syncedUsers.map(u => (
-                     <img 
-                       key={u.uid} 
-                       src={u.photoURL} 
-                       title={u.displayName}
-                       className="w-5 h-5 rounded-full border-2 border-white shadow-sm ring-1 ring-black/5" 
-                     />
-                   ))}
-                </div>
-                <span className="text-[10px] font-black text-accent uppercase tracking-widest">
-                  {syncedUsers.length} en línea
-                </span>
-                <button 
-                  onClick={() => setIsSettingsOpen(true)}
-                  className="ml-2 p-1.5 hover:bg-gray-100 rounded-lg transition-colors text-text-secondary"
-                  title="Configuración de Equipo"
-                >
-                  <Users className="w-3.5 h-3.5" />
+              <div className="flex-grow text-center px-2 leading-tight">
+                <h2 className={cn("text-base font-black truncate", shoppingMode && "text-white")}>{activeList?.name}</h2>
+                <p className="text-[9px] text-accent uppercase font-black tracking-widest">Sincrolista</p>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <button onClick={() => setShoppingMode(!shoppingMode)} className={cn("p-2 rounded-xl shadow-sm border transition-all active:scale-95", shoppingMode ? "bg-accent text-white border-accent" : "bg-white border-border text-text-secondary")}>
+                  <Zap className="w-5 h-5" />
                 </button>
               </div>
             </div>
 
-            <button 
-              onClick={() => setShoppingMode(!shoppingMode)}
-              className={cn(
-                "flex items-center gap-2 px-6 py-3 rounded-2xl font-black uppercase tracking-widest text-[10px] transition-all shadow-lg active:scale-95",
-                shoppingMode 
-                  ? "bg-white border border-border text-text-main hover:bg-gray-50 shadow-black/5" 
-                  : "bg-accent text-white shadow-accent/40"
+            <header className="hidden lg:flex items-center justify-between mb-8">
+              <div className="flex flex-col">
+                <h2 className={cn("text-3xl font-black tracking-tighter transition-colors", shoppingMode ? "text-white" : "text-text-main")}>
+                  {activeList?.name || 'Cargando...'}
+                </h2>
+                <div className="flex items-center gap-2 mt-1.5">
+                  <div className="flex -space-x-1 mr-2">
+                     {syncedUsers.map(u => (
+                       <img 
+                         key={u.uid} 
+                         src={u.photoURL} 
+                         title={u.displayName}
+                         className="w-5 h-5 rounded-full border-2 border-white shadow-sm ring-1 ring-black/5" 
+                       />
+                     ))}
+                  </div>
+                  <span className="text-[10px] font-black text-accent uppercase tracking-widest">
+                    {syncedUsers.length} en línea
+                  </span>
+                  <button 
+                    onClick={() => setIsSettingsOpen(true)}
+                    className="ml-2 p-1.5 hover:bg-gray-100 rounded-lg transition-colors text-text-secondary"
+                    title="Configuración de Equipo"
+                  >
+                    <Users className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              </div>
+
+              <button 
+                onClick={() => setShoppingMode(!shoppingMode)}
+                className={cn(
+                  "flex items-center gap-2 px-6 py-3 rounded-2xl font-black uppercase tracking-widest text-[10px] transition-all shadow-lg active:scale-95",
+                  shoppingMode 
+                    ? "bg-white border border-border text-text-main hover:bg-gray-50 shadow-black/5" 
+                    : "bg-accent text-white shadow-accent/40"
+                )}
+              >
+                <Zap className={cn("w-3.5 h-3.5", shoppingMode ? "text-accent fill-accent" : "fill-current")} />
+                {shoppingMode ? 'Terminar' : 'Modo Tienda'}
+              </button>
+            </header>
+
+            {/* In-header Search bar for persistence */}
+            <div className={cn(
+              "relative group transition-all duration-300",
+              isScrolled ? "scale-[0.98] lg:scale-100" : "scale-100"
+            )}>
+              <div className={cn(
+                "absolute left-4 top-1/2 -translate-y-1/2 text-gray-400 group-focus-within:text-accent transition-all",
+                isScrolled ? "scale-90" : "scale-100"
+              )}>
+                <Search className={cn("transition-all", isScrolled ? "w-3.5 h-3.5" : "w-4 h-4")} />
+              </div>
+              <input 
+                type="text"
+                value={searchQuery}
+                onChange={e => setSearchQuery(e.target.value)}
+                placeholder={isScrolled ? "Buscando..." : "Busca productos o pasillos..."}
+                className={cn(
+                  "w-full bg-white border border-border rounded-2xl pl-11 pr-4 font-bold text-text-main placeholder:text-gray-400 focus:ring-4 focus:ring-accent/10 focus:border-accent outline-none transition-all shadow-sm shadow-black/5",
+                  isScrolled ? "py-2.5 text-xs" : "py-3.5 text-sm"
+                )}
+              />
+              {searchQuery && (
+                <button 
+                  onClick={() => setSearchQuery('')}
+                  className="absolute right-4 top-1/2 -translate-y-1/2 p-1.5 hover:bg-gray-100 rounded-lg transition-colors text-gray-400"
+                >
+                  <Plus className="w-4 h-4 rotate-45" strokeWidth={3} />
+                </button>
               )}
-            >
-              <Zap className={cn("w-3.5 h-3.5", shoppingMode ? "text-accent fill-accent" : "fill-current")} />
-              {shoppingMode ? 'Terminar' : 'Modo Tienda'}
-            </button>
-          </header>
+            </div>
+          </div>
 
           {/* Shopping Progress Bar */}
           {shoppingMode && items.length > 0 && (
@@ -1184,32 +1233,11 @@ export default function App() {
             </motion.div>
           )}
 
-          {/* Search & Suggestions Bar */}
+          {/* Suggestions Bar */}
           <div className="space-y-4">
-            {/* Search Bar */}
-            <div className="relative group">
-              <div className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400 group-focus-within:text-accent transition-colors">
-                <Search className="w-4 h-4" />
-              </div>
-              <input 
-                type="text"
-                value={searchQuery}
-                onChange={e => setSearchQuery(e.target.value)}
-                placeholder="Buscar productos o pasillos..."
-                className="w-full bg-white border border-border rounded-2xl pl-11 pr-4 py-3 text-sm font-bold text-text-main placeholder:text-gray-400 focus:ring-4 focus:ring-accent/10 focus:border-accent outline-none transition-all shadow-sm shadow-black/5"
-              />
-              {searchQuery && (
-                <button 
-                  onClick={() => setSearchQuery('')}
-                  className="absolute right-4 top-1/2 -translate-y-1/2 p-1.5 hover:bg-gray-100 rounded-lg transition-colors text-gray-400"
-                >
-                  <Plus className="w-3.5 h-3.5 rotate-45" />
-                </button>
-              )}
-            </div>
-
             {!shoppingMode && !searchQuery && (
             <div className="space-y-2">
+
               <div className="flex items-center justify-between text-text-secondary">
                 <div className="flex items-center gap-2">
                   <MessageSquare className="w-3 h-3 text-accent" />
@@ -1332,6 +1360,7 @@ export default function App() {
                             title: `Cantidad para "${item.name}"`,
                             description: "Cambia la cantidad del producto:",
                             initialValue: item.quantity,
+                            type: 'quantity',
                             onConfirm: (val) => updateItemQty(item, val)
                           });
                         }}
@@ -1384,7 +1413,7 @@ export default function App() {
                          className="bg-transparent border-none font-black text-xs outline-none text-text-main cursor-pointer appearance-none pr-4 py-0"
                          disabled={isAdding}
                        >
-                         {[1,2,3,4,5,6,7,8,9,10].map(n => (
+                         {[1,2,3,4,5,6,7,8,9,10,12,15,20,24,30].map(n => (
                            <option key={n} value={String(n)}>{n}</option>
                          ))}
                        </select>
@@ -1652,14 +1681,33 @@ export default function App() {
                 promptConfig.onConfirm(input.value);
               }
             }}>
-              {promptConfig.type !== 'confirm' && (
-                <input 
-                  autoFocus
-                  name="promptInput"
-                  defaultValue={promptConfig.initialValue}
-                  placeholder={promptConfig.placeholder || "Escribe aquí..."}
-                  className="w-full bg-gray-50 border border-border rounded-2xl px-5 py-4 font-bold text-text-main focus:ring-4 focus:ring-accent/10 focus:border-accent outline-hidden mb-6"
-                />
+              {promptConfig.type === 'quantity' ? (
+                <div className="flex items-center justify-center bg-gray-50 border border-border rounded-2xl p-6 mb-8 shadow-inner relative">
+                  <span className="text-[10px] font-black text-gray-400 uppercase mr-4 tracking-widest">Seleccionar</span>
+                  <div className="relative flex items-center group">
+                    <select 
+                      autoFocus
+                      name="promptInput"
+                      defaultValue={promptConfig.initialValue}
+                      className="bg-transparent border-none font-black text-4xl outline-none text-accent cursor-pointer appearance-none pr-10 py-1 transition-all"
+                    >
+                      {[1,2,3,4,5,6,7,8,9,10,12,15,20,24,30].map(n => (
+                        <option key={n} value={String(n)} className="text-text-main text-lg">{n}</option>
+                      ))}
+                    </select>
+                    <ChevronDown className="w-6 h-6 text-accent absolute right-0 pointer-events-none group-hover:scale-110 transition-transform" />
+                  </div>
+                </div>
+              ) : (
+                promptConfig.type !== 'confirm' && (
+                  <input 
+                    autoFocus
+                    name="promptInput"
+                    defaultValue={promptConfig.initialValue}
+                    placeholder={promptConfig.placeholder || "Escribe aquí..."}
+                    className="w-full bg-gray-50 border border-border rounded-2xl px-5 py-4 font-bold text-text-main focus:ring-4 focus:ring-accent/10 focus:border-accent outline-hidden mb-6"
+                  />
+                )
               )}
               <div className="flex gap-3">
                 <button 
