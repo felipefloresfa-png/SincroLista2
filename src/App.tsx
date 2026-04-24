@@ -961,6 +961,21 @@ export default function App() {
     });
   };
 
+  useEffect(() => {
+    if (promptConfig.isOpen && promptConfig.type === 'quantity') {
+      setTimeout(() => {
+        const select = document.getElementsByName('promptInput')[0] as HTMLSelectElement;
+        if (select && select.showPicker) {
+          try {
+            select.showPicker();
+          } catch (e) {
+            console.log('showPicker not supported or blocked', e);
+          }
+        }
+      }, 300);
+    }
+  }, [promptConfig.isOpen, promptConfig.type]);
+
   if (isInitializing) return (
     <div className="min-h-screen grid place-items-center bg-bg text-center">
       <div className="space-y-4">
@@ -1111,16 +1126,16 @@ export default function App() {
         </aside>
 
         {/* Main Content Area */}
-        <main className="flex-grow p-4 md:p-8 lg:p-12 space-y-8 min-w-0 pb-32 relative">
+        <main className="flex-grow min-w-0 relative">
           
           {/* Header & Search Persistent - Sticky on Mobile */}
           <div className={cn(
-            "sticky top-0 z-[60] bg-gray-50/95 backdrop-blur-xl -mx-4 px-4 pt-4 md:-mx-8 md:px-8 transition-all lg:static lg:bg-transparent lg:backdrop-blur-none lg:p-0 lg:mx-0 lg:border-none",
-            isScrolled ? "pb-3 border-b border-border/50 shadow-sm" : "pb-4"
+            "sticky top-0 z-[60] bg-gray-50/90 backdrop-blur-xl transition-all duration-300 lg:static lg:bg-transparent lg:backdrop-blur-none lg:p-0 lg:mx-0 lg:border-none",
+            isScrolled ? "p-3 border-b border-border/50 shadow-sm" : "p-4 md:p-8 lg:p-12 pb-4"
           )}>
             {/* Top Bar Mobile (Hides on scroll to save space) */}
             <div className={cn(
-              "lg:hidden flex items-center justify-between gap-2 overflow-hidden transition-all duration-300 origin-top",
+              "lg:hidden flex items-center justify-between gap-2 overflow-hidden transition-all duration-300 transform-gpu",
               isScrolled ? "h-0 opacity-0 mb-0 scale-y-0" : "h-auto opacity-100 mb-4 scale-y-100"
             )}>
               <button onClick={() => setIsSidebarOpen(true)} className="p-2 bg-white border border-border rounded-xl shadow-sm active:scale-95 transition-all">
@@ -1182,8 +1197,8 @@ export default function App() {
 
             {/* In-header Search bar for persistence */}
             <div className={cn(
-              "relative group transition-all duration-300",
-              isScrolled ? "scale-[0.98] lg:scale-100" : "scale-100"
+              "relative group transition-all duration-300 ease-out",
+              isScrolled ? "max-w-md mx-auto" : "w-full"
             )}>
               <div className={cn(
                 "absolute left-4 top-1/2 -translate-y-1/2 text-gray-400 group-focus-within:text-accent transition-all",
@@ -1195,10 +1210,10 @@ export default function App() {
                 type="text"
                 value={searchQuery}
                 onChange={e => setSearchQuery(e.target.value)}
-                placeholder={isScrolled ? "Buscando..." : "Busca productos o pasillos..."}
+                placeholder={isScrolled ? "Buscar..." : "Busca productos o pasillos..."}
                 className={cn(
                   "w-full bg-white border border-border rounded-2xl pl-11 pr-4 font-bold text-text-main placeholder:text-gray-400 focus:ring-4 focus:ring-accent/10 focus:border-accent outline-none transition-all shadow-sm shadow-black/5",
-                  isScrolled ? "py-2.5 text-xs" : "py-3.5 text-sm"
+                  isScrolled ? "py-2.5 text-xs h-10" : "py-3.5 text-sm h-12"
                 )}
               />
               {searchQuery && (
@@ -1211,6 +1226,8 @@ export default function App() {
               )}
             </div>
           </div>
+
+          <div className="p-4 md:p-8 lg:p-12 pt-0 space-y-8 pb-32">
 
           {/* Shopping Progress Bar */}
           {shoppingMode && items.length > 0 && (
@@ -1413,7 +1430,7 @@ export default function App() {
                          className="bg-transparent border-none font-black text-xs outline-none text-text-main cursor-pointer appearance-none pr-4 py-0"
                          disabled={isAdding}
                        >
-                         {[1,2,3,4,5,6,7,8,9,10,12,15,20,24,30].map(n => (
+                         {[1,2,3,4,5,6,7,8,9,10].map(n => (
                            <option key={n} value={String(n)}>{n}</option>
                          ))}
                        </select>
@@ -1431,6 +1448,7 @@ export default function App() {
               </div>
             </div>
           )}
+          </div>
         </main>
       </div>
 
@@ -1691,7 +1709,7 @@ export default function App() {
                       defaultValue={promptConfig.initialValue}
                       className="bg-transparent border-none font-black text-4xl outline-none text-accent cursor-pointer appearance-none pr-10 py-1 transition-all"
                     >
-                      {[1,2,3,4,5,6,7,8,9,10,12,15,20,24,30].map(n => (
+                      {[1,2,3,4,5,6,7,8,9,10].map(n => (
                         <option key={n} value={String(n)} className="text-text-main text-lg">{n}</option>
                       ))}
                     </select>
