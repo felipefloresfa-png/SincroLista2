@@ -221,7 +221,7 @@ export default function App() {
     addLog("Configurando receptor de autenticación...");
     const keyStatus = process.env.GEMINI_API_KEY ? "Detectada ✅" : "FALTA ❌";
     addLog(`Estado IA: ${keyStatus}`);
-    addLog(`Versión: 2.1.2 (Debug Active)`);
+    addLog(`Versión: 2.1.3 (AI Stable Build)`);
     
     const unsub = onAuthStateChanged(auth, async (u) => {
       addLog(`Estado Auth: ${u ? 'Sesión activa (' + u.uid.substring(0,5) + '...)' : 'Sin sesión'}`);
