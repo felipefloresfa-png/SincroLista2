@@ -56,7 +56,10 @@ import {
   Layout,
   ChevronDown,
   UserPlus,
-  Pencil
+  Pencil,
+  Copy,
+  MessageCircle,
+  Mail
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { analyzeItem, getSmartRecommendations, ItemInfo } from './lib/gemini';
@@ -146,29 +149,78 @@ interface ActivityItem {
 function CopyCodeComponent({ code }: { code: string }) {
   const [isCopied, setIsCopied] = useState(false);
 
+  const shareMessage = `¡Hola! Únete a mi grupo en SincroLista para compartir nuestras listas de compras en tiempo real. Mi código es: ${code}`;
+  
+  const shareWhatsApp = () => {
+    const url = `https://wa.me/?text=${encodeURIComponent(shareMessage)}`;
+    window.open(url, '_blank');
+  };
+
+  const shareEmail = () => {
+    const url = `mailto:?subject=Invitación a SincroLista&body=${encodeURIComponent(shareMessage)}`;
+    window.open(url, '_blank');
+  };
+
+  const shareNative = async () => {
+    if (navigator.share) {
+      try {
+        await navigator.share({
+          title: 'Invitación a SincroLista',
+          text: shareMessage,
+        });
+      } catch (err) {
+        console.error("Error sharing:", err);
+      }
+    }
+  };
+
   return (
-    <div className={cn("inline-flex items-center gap-1.5 w-full bg-white border border-border rounded-xl px-3 py-2")}>
-      <code className="flex-grow text-[10px] font-mono text-text-main break-all">
-        {code}
-      </code>
-      <button 
-        onClick={async () => {
-          const success = await copyToClipboard(code);
-          if (success) {
-            setIsCopied(true);
-            setTimeout(() => setIsCopied(false), 2000);
-          } else {
-            alert("Error al copiar. Prueba seleccionando el texto manualmente.");
-          }
-        }}
-        className={cn(
-          "p-2 rounded-xl transition-all",
-          isCopied ? "bg-green-500 text-white" : "bg-text-main text-white hover:bg-black"
-        )}
-        title="Copiar Código"
-      >
-        {isCopied ? <Check className="w-3.5 h-3.5" /> : <Share2 className="w-3.5 h-3.5" />}
-      </button>
+    <div className="space-y-3">
+      <div className={cn("inline-flex items-center gap-1.5 w-full bg-white border border-border rounded-xl px-3 py-2 shadow-xs group")}>
+        <code className="flex-grow text-[10px] font-mono text-text-main break-all">
+          {code}
+        </code>
+        <button 
+          onClick={async () => {
+            const success = await copyToClipboard(code);
+            if (success) {
+              setIsCopied(true);
+              setTimeout(() => setIsCopied(false), 2000);
+            }
+          }}
+          className={cn(
+            "p-2 rounded-xl transition-all active:scale-95",
+            isCopied ? "bg-green-500 text-white" : "bg-text-main text-white hover:bg-black"
+          )}
+          title="Copiar Código"
+        >
+          {isCopied ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+        </button>
+      </div>
+
+      <div className="grid grid-cols-2 gap-2">
+        <button 
+          onClick={shareWhatsApp}
+          className="flex items-center justify-center gap-2 py-2.5 bg-[#25D366] text-white rounded-xl text-[10px] font-black uppercase tracking-widest hover:opacity-90 active:scale-95 transition-all shadow-sm"
+        >
+          <MessageCircle className="w-3.5 h-3.5" /> WhatsApp
+        </button>
+        <button 
+          onClick={shareEmail}
+          className="flex items-center justify-center gap-2 py-2.5 bg-gray-800 text-white rounded-xl text-[10px] font-black uppercase tracking-widest hover:bg-black active:scale-95 transition-all shadow-sm"
+        >
+          <Mail className="w-3.5 h-3.5" /> Email
+        </button>
+      </div>
+      
+      {navigator.share && (
+        <button 
+          onClick={shareNative}
+          className="w-full flex items-center justify-center gap-2 py-2.5 bg-accent text-white rounded-xl text-[10px] font-black uppercase tracking-widest hover:opacity-90 active:scale-95 transition-all shadow-sm"
+        >
+          <Share2 className="w-3.5 h-3.5" /> Otras opciones
+        </button>
+      )}
     </div>
   );
 }
@@ -187,6 +239,7 @@ export default function App() {
   const [isAdding, setIsAdding] = useState(false);
   const [shoppingMode, setShoppingMode] = useState(false);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [loading, setLoading] = useState(false); // Used for other global loading states if needed
   
   // Dialog State
@@ -910,38 +963,6 @@ export default function App() {
           </div>
 
           <div className="flex-grow space-y-8">
-            {/* Equipo / Invitación */}
-            <div className="bg-gray-50 rounded-2xl p-4 border border-border">
-              <div className="flex items-center justify-between mb-3">
-                <h3 className="text-[10px] font-black uppercase tracking-widest text-text-secondary flex items-center gap-2">
-                  <Users className="w-3 h-3" /> Equipo
-                </h3>
-              </div>
-              
-              <div className="flex items-center gap-2 mb-4">
-                <div className="flex -space-x-2 overflow-hidden">
-                  {syncedUsers.map(u => (
-                    <img key={u.uid} src={u.photoURL} title={u.displayName} className="inline-block h-8 w-8 rounded-full ring-2 ring-white shadow-sm" />
-                  ))}
-                </div>
-                {syncedUsers.length === 1 && (
-                  <span className="text-[10px] font-bold text-accent bg-accent/5 px-2 py-0.5 rounded-full">Tú solo</span>
-                )}
-              </div>
-
-              <div className="space-y-2">
-                <p className="text-[9px] font-bold text-text-secondary uppercase tracking-tight">Tu código para invitar:</p>
-                <CopyCodeComponent code={profile?.familyId || ''} />
-                
-                <button 
-                  onClick={handleJoinFamilyPrompt}
-                  className="w-full mt-2 py-2 text-[10px] font-black uppercase tracking-widest text-accent hover:bg-accent/5 rounded-lg transition-all border border-dashed border-accent/20"
-                >
-                  Unirse a otro grupo
-                </button>
-              </div>
-            </div>
-
             {/* List Selector */}
             <div>
               <div className="flex items-center justify-between mb-3">
@@ -994,20 +1015,55 @@ export default function App() {
               <h3 className="text-[10px] font-bold uppercase tracking-widest text-text-secondary mb-3 flex items-center gap-2">
                 <History className="w-3 h-3" /> Actividad
               </h3>
-              <div className="space-y-3">
-                {activities.map(a => (
-                  <div key={a.id} className="text-[11px] leading-tight">
-                    <span className="font-bold text-text-main capitalize block">{a.type}</span>
-                    <span className="text-text-secondary">{a.itemName}</span>
-                  </div>
-                ))}
+              <div className="space-y-4 max-h-[300px] overflow-y-auto scrollbar-hide pr-2">
+                {activities.map(a => {
+                  const user = syncedUsers.find(u => u.uid === a.userId);
+                  const userName = user?.uid === profile?.uid ? 'Tú' : (user?.displayName.split(' ')[0] || 'Alguien');
+                  const date = a.timestamp?.toDate ? a.timestamp.toDate() : (a.timestamp ? new Date(a.timestamp) : null);
+                  const timeStr = date ? date.toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' }) : '';
+                  const dateStr = date ? date.toLocaleDateString('es-ES', { day: '2-digit', month: '2-digit' }) : '';
+                  
+                  const labels: any = { add: 'Agregó', check: 'Marcó', delete: 'Eliminó', clear: 'Limpió' };
+
+                  return (
+                    <div key={a.id} className="text-[11px] leading-tight flex flex-col space-y-0.5 border-l-2 border-accent/10 hover:border-accent/30 pl-3 transition-colors py-0.5">
+                      <div className="flex justify-between items-center">
+                        <span className="font-black text-text-main text-[10px] uppercase tracking-tighter">
+                          {labels[a.type] || a.type}
+                        </span>
+                        <span className="text-[8px] text-text-secondary font-mono">
+                          {dateStr} {timeStr}
+                        </span>
+                      </div>
+                      <div className="text-text-secondary truncate font-medium">{a.itemName}</div>
+                      <div className="flex items-center gap-1.5 mt-0.5">
+                        {user?.photoURL && <img src={user.photoURL} className="w-3 h-3 rounded-full border border-gray-100" />}
+                        <span className="text-[9px] font-black text-accent uppercase tracking-widest">
+                          {userName}
+                        </span>
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
             </div>
           </div>
 
-          <button onClick={() => auth.signOut()} className="mt-8 flex items-center gap-3 px-3 py-2 text-red-500 hover:bg-red-50 rounded-xl transition-colors font-semibold text-sm">
-            <LogOut className="w-4 h-4" /> Cerrar Sesión
-          </button>
+          <div className="mt-8 space-y-2">
+            <button 
+              onClick={() => { setIsSettingsOpen(true); setIsSidebarOpen(false); }} 
+              className="w-full flex items-center gap-3 px-3 py-2.5 text-text-secondary hover:bg-gray-50 rounded-xl transition-colors font-semibold text-sm group"
+            >
+              <div className="w-8 h-8 rounded-full overflow-hidden bg-gray-100 border border-border">
+                <img src={profile?.photoURL} className="w-full h-full object-cover" />
+              </div>
+              <div className="flex-grow text-left">
+                <p className="leading-none text-text-main">Mi Perfil</p>
+                <p className="text-[10px] text-text-secondary mt-0.5">Configuración</p>
+              </div>
+              <ChevronRight className="w-4 h-4 opacity-0 group-hover:opacity-100 transition-opacity" />
+            </button>
+          </div>
         </aside>
 
         {/* Main Content Area */}
@@ -1046,6 +1102,13 @@ export default function App() {
                 <span className="text-[10px] font-black text-accent uppercase tracking-widest">
                   {syncedUsers.length} en línea
                 </span>
+                <button 
+                  onClick={() => setIsSettingsOpen(true)}
+                  className="ml-2 p-1.5 hover:bg-gray-100 rounded-lg transition-colors text-text-secondary"
+                  title="Configuración de Equipo"
+                >
+                  <Users className="w-3.5 h-3.5" />
+                </button>
               </div>
             </div>
 
@@ -1319,6 +1382,102 @@ export default function App() {
           )}
         </main>
       </div>
+
+      {/* Settings Modal */}
+      {isSettingsOpen && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
+          <motion.div 
+             initial={{ opacity: 0 }} 
+             animate={{ opacity: 1 }} 
+             exit={{ opacity: 0 }}
+             onClick={() => setIsSettingsOpen(false)}
+             className="absolute inset-0 bg-black/60 backdrop-blur-sm" 
+          />
+          <motion.div 
+            initial={{ opacity: 0, scale: 0.9, y: 20 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            className="bg-white w-full max-w-lg rounded-[32px] overflow-hidden shadow-2xl relative z-10 flex flex-col max-h-[90vh]"
+          >
+            <div className="p-6 pb-0 flex items-center justify-between">
+              <h2 className="text-xl font-black tracking-tight text-text-main">Configuración</h2>
+              <button 
+                onClick={() => setIsSettingsOpen(false)}
+                className="p-2 hover:bg-gray-50 rounded-xl transition-colors"
+                title="Cerrar"
+              >
+                <Plus className="w-5 h-5 rotate-45" />
+              </button>
+            </div>
+
+            <div className="p-6 overflow-y-auto space-y-8 scrollbar-none">
+              {/* Profile Header */}
+              <div className="flex items-center gap-4 bg-gray-50 p-4 rounded-2xl border border-border">
+                <div className="w-16 h-16 rounded-2xl overflow-hidden bg-gray-200 shadow-lg ring-4 ring-white shrink-0">
+                  <img src={profile?.photoURL} className="w-full h-full object-cover" />
+                </div>
+                <div>
+                  <h3 className="font-black text-lg text-text-main leading-none">{profile?.displayName}</h3>
+                  <p className="text-xs text-text-secondary font-medium mt-1.5 flex items-center gap-1.5">
+                    {profile?.email ? profile.email : "Invitado"}
+                  </p>
+                </div>
+              </div>
+
+              {/* Equipo Section */}
+              <div className="space-y-4">
+                <div className="flex items-center justify-between">
+                  <h4 className="text-[10px] font-black uppercase tracking-widest text-text-secondary flex items-center gap-2">
+                    <Users className="w-3 h-3" /> Equipo Actual
+                  </h4>
+                  {syncedUsers.length === 1 && (
+                    <span className="text-[9px] font-black text-accent bg-accent/5 px-2 py-0.5 rounded-full uppercase">Tú solo</span>
+                  )}
+                </div>
+                
+                <div className="flex flex-wrap gap-2">
+                  {syncedUsers.map(u => (
+                    <div key={u.uid} className="flex items-center gap-2 bg-white border border-border rounded-xl px-2.5 py-1.5 shadow-xs">
+                      <img src={u.photoURL} className="h-5 w-5 rounded-full border border-gray-100 ring-1 ring-black/5" />
+                      <span className="text-[10px] font-bold text-text-main truncate max-w-[100px]">{u.displayName}</span>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="bg-accent/5 border border-dashed border-accent/20 rounded-2xl p-5 space-y-4">
+                  <p className="text-[10px] font-black text-accent uppercase tracking-widest text-center">Invitar a alguien</p>
+                  <CopyCodeComponent code={profile?.familyId || ''} />
+                  <p className="text-[10px] text-text-secondary text-center leading-relaxed px-4">
+                    Comparte este código para que otra persona vea tus mismas listas en tiempo real.
+                  </p>
+
+                  <div className="pt-2">
+                    <button 
+                      onClick={() => { setIsSettingsOpen(false); handleJoinFamilyPrompt(); }}
+                      className="w-full py-3 bg-white border border-border text-[11px] font-black uppercase tracking-widest text-text-main hover:bg-gray-50 rounded-xl transition-all shadow-xs active:scale-95"
+                    >
+                      Unirse a otro grupo
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              {/* Account Actions */}
+              <div className="pt-4 border-t border-border space-y-4">
+                <button 
+                  onClick={() => auth.signOut()} 
+                  className="w-full flex items-center justify-center gap-3 py-4 text-red-500 bg-red-50 hover:bg-red-100 rounded-2xl transition-colors font-black text-xs uppercase tracking-widest"
+                >
+                  <LogOut className="w-4 h-4" /> Cerrar Sesión
+                </button>
+                <div className="text-center space-y-1">
+                   <p className="text-[9px] text-text-secondary font-black uppercase tracking-tighter">SincroLista Stabilized Build</p>
+                   <p className="text-[8px] text-text-secondary/50 font-mono italic">v2.1.3 • AI Powered</p>
+                </div>
+              </div>
+            </div>
+          </motion.div>
+        </div>
+      )}
 
       {/* Custom Dialog / Prompt */}
       {promptConfig.isOpen && (
