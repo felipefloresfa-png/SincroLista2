@@ -219,8 +219,9 @@ export default function App() {
   // Auth & Profile
   useEffect(() => {
     addLog("Configurando receptor de autenticación...");
-    const keyStatus = process.env.GEMINI_API_KEY ? "Detectada" : "FALTA";
-    addLog(`Salud IA: LLave ${keyStatus}`);
+    const keyStatus = process.env.GEMINI_API_KEY ? "Detectada ✅" : "FALTA ❌";
+    addLog(`Estado IA: ${keyStatus}`);
+    addLog(`Versión: 2.1.2 (Debug Active)`);
     
     const unsub = onAuthStateChanged(auth, async (u) => {
       addLog(`Estado Auth: ${u ? 'Sesión activa (' + u.uid.substring(0,5) + '...)' : 'Sin sesión'}`);
@@ -606,15 +607,15 @@ export default function App() {
         analysis = { category: historicalAssignment.category, priorityLevel: 'medium' };
       }
       
-      if (!analysis || !analysis.category || analysis.category === 'Otros') {
-        addLog("Consultando IA para nuevo producto...");
+      if (!analysis || !analysis.category || analysis.category === 'Otros' || analysis.category === 'Sin Categoría') {
+        addLog(`IA: Analizando "${name}"...`);
         try {
           const analysisPromise = analyzeItem(name);
-          const timeoutPromise = new Promise<any>((_, reject) => setTimeout(() => reject(new Error("Timeout IA")), 5000));
+          const timeoutPromise = new Promise<any>((_, reject) => setTimeout(() => reject(new Error("Timeout (5s)")), 5000));
           analysis = await Promise.race([analysisPromise, timeoutPromise]);
-          addLog(`IA respondiendo: ${analysis.category}`);
+          addLog(`IA Éxito: -> ${analysis.category}`);
         } catch (iaError: any) {
-          addLog(`IA Error: ${iaError.message || "Fallo desconocido"}`);
+          addLog(`IA Fallo: ${iaError.message || "Error desconocido"}`);
           analysis = { category: 'Otros', priorityLevel: 'medium' };
         }
       }
