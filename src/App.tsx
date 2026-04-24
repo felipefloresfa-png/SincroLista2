@@ -60,7 +60,9 @@ import {
   Copy,
   MessageCircle,
   Mail,
-  Menu
+  Menu,
+  ArrowRightLeft,
+  FolderPlus
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { analyzeItem, getSmartRecommendations, ItemInfo } from './lib/gemini';
@@ -104,6 +106,22 @@ const copyToClipboard = async (text: string) => {
     return false;
   }
 };
+
+const COMMON_CATEGORIES = [
+  'Frutas y Verduras',
+  'Lácteos y Huevos',
+  'Carnicería',
+  'Congelados',
+  'Panadería',
+  'Fiambrería',
+  'Abarrotes',
+  'Limpieza',
+  'Cuidado Personal',
+  'Bebidas',
+  'Mascotas',
+  'Hogar',
+  'Otros'
+];
 
 // --- Types ---
 interface GroceryItem {
@@ -232,12 +250,15 @@ export default function App() {
   const [isInitializing, setIsInitializing] = useState(true);
   const [isLoggingIn, setIsLoggingIn] = useState(false);
   const [items, setItems] = useState<GroceryItem[]>([]);
+  const [searchQuery, setSearchQuery] = useState('');
   const [lists, setLists] = useState<ShoppingList[]>([]);
   const [activeListId, setActiveListId] = useState<string | null>(null);
   const [activities, setActivities] = useState<ActivityItem[]>([]);
   const [syncedUsers, setSyncedUsers] = useState<UserProfile[]>([]);
   const [recommendations, setRecommendations] = useState<string[]>([]);
   const [isAdding, setIsAdding] = useState(false);
+  const [showCategories, setShowCategories] = useState(false);
+  const [showSuggestions, setShowSuggestions] = useState(false);
   const [shoppingMode, setShoppingMode] = useState(false);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
@@ -252,6 +273,7 @@ export default function App() {
     placeholder?: string;
     type?: 'input' | 'confirm';
     onConfirm: (val: string) => void;
+    onCategorySelect?: (cat: string) => void;
   }>({
     isOpen: false,
     title: '',
@@ -791,9 +813,13 @@ export default function App() {
   const activeList = useMemo(() => lists.find(l => l.id === activeListId), [lists, activeListId]);
   
   const groupedItems = useMemo(() => {
+    const filtered = items.filter(item => 
+      item.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      item.category.toLowerCase().includes(searchQuery.toLowerCase())
+    );
+
     const groups: Record<string, GroceryItem[]> = {};
-    items.forEach(item => {
-      // In shopping mode, we don't hide items, but we will sort them so checked are at the bottom
+    filtered.forEach(item => {
       if (!groups[item.category]) groups[item.category] = [];
       groups[item.category].push(item);
     });
@@ -803,8 +829,16 @@ export default function App() {
       groups[cat].sort((a, b) => (Number(a.checked) - Number(b.checked)));
     });
     
-    return groups;
-  }, [items, shoppingMode]);
+    // Sort groups: groups with pending items first, then alphabet
+    return Object.fromEntries(
+      Object.entries(groups).sort(([catA, itemsA], [catB, itemsB]) => {
+        const pendingA = itemsA.some(i => !i.checked) ? 0 : 1;
+        const pendingB = itemsB.some(i => !i.checked) ? 0 : 1;
+        if (pendingA !== pendingB) return pendingA - pendingB;
+        return catA.localeCompare(catB);
+      })
+    );
+  }, [items, searchQuery]);
 
   const createNewList = async (name: string) => {
     if (!name.trim() || !profile) return;
@@ -1150,8 +1184,31 @@ export default function App() {
             </motion.div>
           )}
 
-          {/* AI Suggestions Bar */}
-          {!shoppingMode && (
+          {/* Search & Suggestions Bar */}
+          <div className="space-y-4">
+            {/* Search Bar */}
+            <div className="relative group">
+              <div className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400 group-focus-within:text-accent transition-colors">
+                <Search className="w-4 h-4" />
+              </div>
+              <input 
+                type="text"
+                value={searchQuery}
+                onChange={e => setSearchQuery(e.target.value)}
+                placeholder="Buscar productos o pasillos..."
+                className="w-full bg-white border border-border rounded-2xl pl-11 pr-4 py-3 text-sm font-bold text-text-main placeholder:text-gray-400 focus:ring-4 focus:ring-accent/10 focus:border-accent outline-none transition-all shadow-sm shadow-black/5"
+              />
+              {searchQuery && (
+                <button 
+                  onClick={() => setSearchQuery('')}
+                  className="absolute right-4 top-1/2 -translate-y-1/2 p-1.5 hover:bg-gray-100 rounded-lg transition-colors text-gray-400"
+                >
+                  <Plus className="w-3.5 h-3.5 rotate-45" />
+                </button>
+              )}
+            </div>
+
+            {!shoppingMode && !searchQuery && (
             <div className="space-y-2">
               <div className="flex items-center justify-between text-text-secondary">
                 <div className="flex items-center gap-2">
@@ -1203,41 +1260,53 @@ export default function App() {
               )}
             </div>
           )}
+        </div>
 
-          {/* Grid of items with better containment */}
+        {/* Grid of items with better containment */}
           <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-2 2xl:grid-cols-3 gap-3 auto-rows-min">
             <AnimatePresence mode="popLayout">
-              {(Object.entries(groupedItems) as [string, GroceryItem[]][]).map(([category, catItems]) => (
-                <motion.div 
-                  layout
-                  key={category}
-                  initial={{ opacity: 0, y: 20 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, scale: 0.95 }}
-                  transition={{ type: "spring", stiffness: 300, damping: 30 }}
-                  className={cn(
-                    "category-card break-inside-avoid",
-                    shoppingMode ? "bg-gray-900 border-gray-800 shadow-none ring-1 ring-white/5" : "bg-white"
-                  )}
-                >
-              <div className="flex items-center gap-2 mb-4 pb-1 border-b border-border/50">
-                <button 
-                  onClick={() => {
-                    setPromptConfig({
-                      isOpen: true,
-                      title: `Renombrar Pasillo`,
-                      description: `Estás renombrando "${category}". Esto moverá todos sus productos al nuevo pasillo.`,
-                      initialValue: category,
-                      onConfirm: (val) => renameCategory(category, val)
-                    });
-                  }}
-                  className="flex items-center gap-2 hover:opacity-70 transition-opacity"
-                >
-                   <Tag className={cn("w-3 h-3", shoppingMode ? "text-accent" : "text-text-secondary")} />
-                   <h4 className={cn("text-[10px] font-black uppercase tracking-widest", shoppingMode ? "text-gray-400" : "text-text-secondary")}>{category}</h4>
-                </button>
-                <span className="text-[9px] font-black tabular-nums bg-gray-50 text-gray-400 px-1.5 py-0.5 rounded-md border border-border">{catItems.length}</span>
-              </div>
+              {(Object.entries(groupedItems) as [string, GroceryItem[]][]).map(([category, catItems]) => {
+                const isCompleted = catItems.length > 0 && catItems.every(i => i.checked);
+                
+                return (
+                  <motion.div 
+                    layout
+                    key={category}
+                    initial={{ opacity: 0, y: 20 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, scale: 0.95 }}
+                    transition={{ type: "spring", stiffness: 300, damping: 30 }}
+                    className={cn(
+                      "category-card break-inside-avoid transition-all duration-500",
+                      shoppingMode ? "bg-gray-900 border-gray-800 shadow-none ring-1 ring-white/5" : "bg-white",
+                      isCompleted && "opacity-60 saturate-50 grayscale-[0.3]"
+                    )}
+                  >
+                <div className="flex items-center justify-between mb-4 pb-1 border-b border-border/50">
+                  <button 
+                    onClick={() => {
+                      setPromptConfig({
+                        isOpen: true,
+                        title: `Renombrar Pasillo`,
+                        description: `Estás renombrando "${category}". Esto moverá todos sus productos al nuevo pasillo.`,
+                        initialValue: category,
+                        onConfirm: (val) => renameCategory(category, val)
+                      });
+                    }}
+                    className="flex items-center gap-2 hover:opacity-70 transition-opacity"
+                  >
+                     <Tag className={cn("w-3 h-3", shoppingMode ? "text-accent" : "text-text-secondary")} />
+                     <h4 className={cn("text-[10px] font-black uppercase tracking-widest", shoppingMode ? "text-gray-400" : "text-text-secondary")}>{category}</h4>
+                  </button>
+                  <div className="flex items-center gap-2">
+                    {isCompleted && (
+                      <span className="text-[8px] font-black text-green-500 bg-green-500/10 px-1.5 py-0.5 rounded-md uppercase tracking-widest animate-in fade-in slide-in-from-right-1">
+                        ¡Listo!
+                      </span>
+                    )}
+                    <span className="text-[9px] font-black tabular-nums bg-gray-50 text-gray-400 px-1.5 py-0.5 rounded-md border border-border">{catItems.length}</span>
+                  </div>
+                </div>
                   <div className="space-y-1">
                     {catItems.map(item => (
                       <ItemRow 
@@ -1249,21 +1318,14 @@ export default function App() {
                           setPromptConfig({
                             isOpen: true,
                             title: `Editar "${item.name}"`,
-                            description: "Cambia el nombre del producto:",
+                            description: "Cambia el nombre o mueve a otro pasillo:",
                             initialValue: item.name,
-                            onConfirm: (val) => updateItemName(item, val)
+                            onConfirm: (val) => updateItemName(item, val),
+                            onCategorySelect: (cat) => updateItemCategory(item, cat)
                           });
                         }}
                         onTogglePriority={() => togglePriority(item)}
-                        onUpdateCategory={() => {
-                          setPromptConfig({
-                            isOpen: true,
-                            title: `Mover "${item.name}"`,
-                            description: "Escribe el nombre del nuevo pasillo:",
-                            initialValue: item.category,
-                            onConfirm: (val) => updateItemCategory(item, val)
-                          });
-                        }}
+                        onUpdateCategory={() => {}} // Not used anymore but kept for prop consistency if needed
                         onUpdateQty={() => {
                           setPromptConfig({
                             isOpen: true,
@@ -1278,7 +1340,7 @@ export default function App() {
                     ))}
                   </div>
                 </motion.div>
-              ))}
+              )})}
             </AnimatePresence>
           </div>
 
@@ -1456,20 +1518,127 @@ export default function App() {
             <h3 className="text-xl font-black text-text-main mb-2">{promptConfig.title}</h3>
             {promptConfig.description && <p className="text-xs font-semibold text-text-secondary mb-6">{promptConfig.description}</p>}
             
-            {promptConfig.title.toLowerCase().includes('pasillo') && activeCategories.length > 0 && (
+            {(promptConfig.title.toLowerCase().includes('pasillo') || promptConfig.onCategorySelect) && (
               <div className="mb-6 space-y-2">
-                <p className="text-[10px] font-black uppercase text-text-secondary mb-2 tracking-widest">Pasillos actuales</p>
-                <div className="flex flex-wrap gap-2">
-                  {activeCategories.map(cat => (
-                    <button
-                      key={cat}
-                      type="button"
-                      onClick={() => promptConfig.onConfirm(cat)}
-                      className="px-3 py-2 bg-gray-50 border border-border rounded-xl text-xs font-bold text-text-main hover:border-accent hover:text-accent transition-all"
-                    >
-                      {cat}
-                    </button>
-                  ))}
+                <div className="relative">
+                  <button 
+                    onClick={() => setShowCategories(!showCategories)}
+                    className="w-full flex items-center justify-between p-3.5 bg-gray-50 border border-border rounded-xl text-[13px] font-bold text-text-main hover:border-accent transition-all group shadow-xs"
+                  >
+                    <div className="flex items-center gap-2.5">
+                      <ArrowRightLeft className="w-4 h-4 text-accent" />
+                      <span>Cambiar a otro pasillo...</span>
+                    </div>
+                    <ChevronDown className={cn("w-4 h-4 text-text-secondary transition-transform duration-300", showCategories && "rotate-180")} />
+                  </button>
+
+                  <AnimatePresence>
+                    {showCategories && (
+                      <>
+                        <motion.div 
+                          initial={{ opacity: 0 }}
+                          animate={{ opacity: 1 }}
+                          exit={{ opacity: 0 }}
+                          className="fixed inset-0 z-40 bg-transparent"
+                          onClick={() => setShowCategories(false)}
+                        />
+                        <motion.div 
+                          initial={{ height: 0, opacity: 0, scale: 0.95 }}
+                          animate={{ height: "auto", opacity: 1, scale: 1 }}
+                          exit={{ height: 0, opacity: 0, scale: 0.95 }}
+                          className="absolute left-0 right-0 top-full mt-2 z-50 bg-white border border-border rounded-2xl shadow-xl overflow-hidden origin-top"
+                        >
+                          <div className="max-h-[300px] overflow-y-auto scrollbar-hide py-2">
+                            {/* Pasillos Activos */}
+                            {activeCategories.filter(c => c !== 'Otros' && c !== 'Otro').length > 0 && (
+                              <div className="px-2 pb-1">
+                                <p className="px-3 py-2 text-[10px] font-black uppercase text-text-secondary tracking-widest opacity-40">Pasillos en esta lista</p>
+                                {activeCategories.filter(c => c !== 'Otros' && c !== 'Otro').map(cat => (
+                                  <button
+                                    key={cat}
+                                    type="button"
+                                    onClick={() => {
+                                      if (promptConfig.onCategorySelect) {
+                                        promptConfig.onCategorySelect(cat);
+                                        setPromptConfig(prev => ({ ...prev, isOpen: false }));
+                                        setShowCategories(false);
+                                      } else {
+                                        promptConfig.onConfirm(cat);
+                                        setShowCategories(false);
+                                      }
+                                    }}
+                                    className="w-full flex items-center gap-3 px-3 py-2.5 hover:bg-accent/5 transition-colors text-[13px] font-bold text-text-main rounded-xl group"
+                                  >
+                                    <span className="w-1.5 h-1.5 rounded-full bg-accent/20 group-hover:bg-accent" />
+                                    {cat}
+                                  </button>
+                                ))}
+                              </div>
+                            )}
+
+                            {/* Pasillos Sugeridos */}
+                            <div className="px-2 pt-1 border-t border-border mt-1">
+                              <p className="px-3 py-2 text-[10px] font-black uppercase text-text-secondary tracking-widest opacity-40">Sugerencias (Nuevo)</p>
+                              {COMMON_CATEGORIES.filter(c => !activeCategories.includes(c) && c !== 'Otros' && c !== 'Otro').map(cat => (
+                                <button
+                                  key={cat}
+                                  type="button"
+                                  onClick={() => {
+                                    if (promptConfig.onCategorySelect) {
+                                      promptConfig.onCategorySelect(cat);
+                                      setPromptConfig(prev => ({ ...prev, isOpen: false }));
+                                      setShowCategories(false);
+                                    } else {
+                                      promptConfig.onConfirm(cat);
+                                      setShowCategories(false);
+                                    }
+                                  }}
+                                  className="w-full flex items-center gap-3 px-3 py-2.5 hover:bg-accent/5 transition-colors text-[13px] font-bold text-text-main rounded-xl group"
+                                >
+                                  <FolderPlus className="w-4 h-4 text-accent/40 group-hover:text-accent" />
+                                  {cat}
+                                </button>
+                              ))}
+
+                              {/* Opción Otro para escribir personalizado */}
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setShowCategories(false);
+                                  // Cerramos el prompt actual y abrimos uno nuevo para el pasillo
+                                  const currentOnCategorySelect = promptConfig.onCategorySelect;
+                                  const currentOnConfirm = promptConfig.onConfirm;
+                                  
+                                  // Pequeño delay para que la animación de cierre del dropdown no interfiera
+                                  setTimeout(() => {
+                                    setPromptConfig({
+                                      isOpen: true,
+                                      title: "Nuevo Pasillo",
+                                      description: "Escribe el nombre del pasillo personalizado:",
+                                      initialValue: "",
+                                      onConfirm: (customCat) => {
+                                        if (customCat.trim()) {
+                                          if (currentOnCategorySelect) {
+                                            currentOnCategorySelect(customCat.trim());
+                                          } else {
+                                            currentOnConfirm(customCat.trim());
+                                          }
+                                        }
+                                      }
+                                    });
+                                  }, 100);
+                                }}
+                                className="w-full flex items-center gap-3 px-3 py-2.5 hover:bg-accent/5 transition-colors text-[13px] font-bold text-accent rounded-xl group mt-1 bg-accent/5"
+                              >
+                                <Plus className="w-4 h-4" />
+                                <span>Otro (Escribir pasillo...)</span>
+                              </button>
+                            </div>
+                          </div>
+                        </motion.div>
+                      </>
+                    )}
+                  </AnimatePresence>
                 </div>
               </div>
             )}
@@ -1579,13 +1748,15 @@ function ItemRow({ item, onToggle, onDelete, onEdit, onUpdateQty, onTogglePriori
 
       <div className="flex items-center gap-1 shrink-0">
         {!shoppingMode && (
-          <button 
-            onClick={onEdit}
-            className="lg:opacity-0 group-hover:opacity-100 p-1.5 hover:bg-gray-100 text-gray-300 hover:text-text-main rounded-lg transition-all"
-            title="Editar nombre"
-          >
-            <Pencil className="w-3 h-3" />
-          </button>
+          <div className="flex items-center gap-0.5 animate-in fade-in zoom-in-95 duration-200">
+            <button 
+              onClick={onEdit}
+              className="lg:opacity-0 group-hover:opacity-100 p-1.5 hover:bg-gray-100 border border-transparent hover:border-border text-gray-300 hover:text-text-main rounded-lg transition-all"
+              title="Editar"
+            >
+              <Pencil className="w-3 h-3" />
+            </button>
+          </div>
         )}
         <button 
           onClick={onUpdateQty}
