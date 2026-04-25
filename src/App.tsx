@@ -43,6 +43,7 @@ import {
   RefreshCw,
   List as ListIcon,
   Search,
+  Mic,
   History,
   AlertCircle,
   ChevronRight,
@@ -73,7 +74,7 @@ import {
   Filter
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { analyzeItem, getSmartRecommendations, ItemInfo } from './lib/gemini';
+import { analyzeItem, getSmartRecommendations, parseVoiceInput, ItemInfo, ParsedVoiceItem } from './lib/gemini';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 
@@ -279,6 +280,81 @@ function CopyCodeComponent({ code }: { code: string }) {
         </button>
       )}
     </div>
+  );
+}
+
+function VoiceInputButton({ onItemsFound }: { onItemsFound: (items: ParsedVoiceItem[]) => void }) {
+  const [isListening, setIsListening] = useState(false);
+
+  const startListening = () => {
+    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+      alert("Tu navegador no soporta dictado de voz. Por favor usa Chrome o Safari.");
+      return;
+    }
+
+    // Comprobar si estamos en un iframe (el preview de AI Studio es un iframe)
+    if (window.self !== window.top) {
+      console.warn("[Dictado] Detectado entorno iframe. Si el micrófono no funciona, abre la app en una pestaña nueva.");
+    }
+
+    try {
+      const recognition = new SpeechRecognition();
+      recognition.lang = 'es-CL';
+      recognition.continuous = false;
+      recognition.interimResults = false;
+
+      recognition.onstart = () => {
+        console.log("[Dictado] Escuchando...");
+        setIsListening(true);
+      };
+
+      recognition.onend = () => {
+        console.log("[Dictado] Fin de escucha.");
+        setIsListening(false);
+      };
+      
+      recognition.onerror = (event: any) => {
+        console.error("[Dictado] Error de reconocimiento:", event.error);
+        setIsListening(false);
+        if (event.error === 'not-allowed') {
+          alert("Permiso de micrófono denegado. Asegúrate de dar permisos en el navegador y considera abrir la app en una pestaña nueva.");
+        }
+      };
+
+      recognition.onresult = async (event: any) => {
+        const transcript = event.results[0][0].transcript;
+        console.log("[Dictado] Texto reconocido:", transcript);
+        try {
+          const parsed = await parseVoiceInput(transcript);
+          onItemsFound(parsed);
+        } catch (error) {
+          console.error("[IA] Error procesando texto:", error);
+        }
+      };
+
+      recognition.start();
+    } catch (err) {
+      console.error("[Dictado] Error al iniciar reconocimiento:", err);
+      setIsListening(false);
+    }
+  };
+
+  return (
+    <button
+      type="button"
+      onClick={(e) => {
+        e.preventDefault();
+        startListening();
+      }}
+      className={cn(
+        "p-2 rounded-xl transition-all active:scale-95 flex-none",
+        isListening ? "bg-red-500 text-white animate-pulse shadow-lg shadow-red-500/20" : "bg-gray-100 text-text-secondary hover:bg-black hover:text-white"
+      )}
+      title="Dictar productos (Ej: necesito leche y dos panes)"
+    >
+      <Mic className={cn("w-4 h-4", isListening && "scale-110")} />
+    </button>
   );
 }
 
@@ -708,6 +784,18 @@ export default function App() {
       familyId: profile.familyId, 
       timestamp: serverTimestamp() 
     });
+  };
+
+  const handleVoiceItems = async (parsedItems: ParsedVoiceItem[]) => {
+    addLog(`Dictado: Procesando ${parsedItems.length} productos...`);
+    for (const item of parsedItems) {
+      // Usamos qty especificado o 1 por defecto
+      const qty = item.quantity?.toString() || '1';
+      // Si el item viene con unidad (ej: "3 litros de leche"), concatenamos al nombre o usamos campo unitario
+      const finalName = item.unit ? `${item.name} (${item.unit})` : item.name;
+      await addItem(finalName, qty);
+    }
+    addLog("Dictado completado con éxito.");
   };
 
   const addItem = async (name: string, qty: string = '1', listIdOverride?: string) => {
@@ -1276,25 +1364,33 @@ export default function App() {
             </header>
 
             {/* In-header Search bar for persistence */}
-            <div className="relative group w-full max-w-2xl mx-auto">
-              <div className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400 group-focus-within:text-accent transition-all">
-                <Search className="w-4 h-4" />
+            <div className="flex items-center gap-2 w-full max-w-2xl mx-auto">
+              <div className="relative group flex-grow">
+                <div className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400 group-focus-within:text-accent transition-all">
+                  <Search className="w-4 h-4" />
+                </div>
+                <input 
+                  type="text"
+                  value={searchQuery}
+                  onChange={e => setSearchQuery(e.target.value)}
+                  onKeyDown={e => {
+                    if (e.key === 'Enter' && searchQuery.trim()) {
+                      addItem(searchQuery);
+                      setSearchQuery('');
+                    }
+                  }}
+                  placeholder="Busca o agrega productos..."
+                  className="w-full h-11 bg-white border border-border rounded-2xl pl-11 pr-4 font-bold text-sm text-text-main placeholder:text-gray-400 focus:ring-4 focus:ring-accent/10 focus:border-accent outline-none transition-all shadow-sm shadow-black/5"
+                />
+                {searchQuery && (
+                  <button 
+                    onClick={() => setSearchQuery('')}
+                    className="absolute right-4 top-1/2 -translate-y-1/2 p-1.5 hover:bg-gray-100 rounded-lg transition-colors text-gray-400"
+                  >
+                    <Plus className="w-4 h-4 rotate-45" strokeWidth={3} />
+                  </button>
+                )}
               </div>
-              <input 
-                type="text"
-                value={searchQuery}
-                onChange={e => setSearchQuery(e.target.value)}
-                placeholder="Busca productos o pasillos..."
-                className="w-full h-11 bg-white border border-border rounded-2xl pl-11 pr-4 font-bold text-sm text-text-main placeholder:text-gray-400 focus:ring-4 focus:ring-accent/10 focus:border-accent outline-none transition-all shadow-sm shadow-black/5"
-              />
-              {searchQuery && (
-                <button 
-                  onClick={() => setSearchQuery('')}
-                  className="absolute right-4 top-1/2 -translate-y-1/2 p-1.5 hover:bg-gray-100 rounded-lg transition-colors text-gray-400"
-                >
-                  <Plus className="w-4 h-4 rotate-45" strokeWidth={3} />
-                </button>
-              )}
             </div>
           </div>
 
@@ -1497,6 +1593,7 @@ export default function App() {
                      className="flex-grow min-w-0 bg-transparent border-none outline-none px-2 text-sm font-bold text-text-main placeholder:text-gray-400 placeholder:font-medium"
                      disabled={isAdding}
                    />
+                   <VoiceInputButton onItemsFound={handleVoiceItems} />
                    <div className="flex items-center bg-gray-100 rounded-xl px-2 py-1.5 border border-border/50 shrink-0 relative transition-colors focus-within:bg-gray-200">
                      <span className="text-[8px] font-black text-gray-400 uppercase mr-1 hidden min-[400px]:inline">Cant</span>
                      <div className="relative flex items-center">

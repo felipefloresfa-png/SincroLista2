@@ -90,3 +90,52 @@ export async function getSmartRecommendations(history: string[]) {
     return ["Leche", "Huevos", "Pan", "Fruta", "Papel Higiénico", "Arroz", "Aceite", "Azúcar", "Sal", "Café", "Té", "Pasta"];
   }
 }
+
+export interface ParsedVoiceItem {
+  name: string;
+  quantity?: number;
+  unit?: string;
+}
+
+export async function parseVoiceInput(text: string): Promise<ParsedVoiceItem[]> {
+  console.log(`[IA] Procesando dictado: "${text}"`);
+  
+  if (!process.env.GEMINI_API_KEY) {
+    // Simple split by commas as fallback
+    return text.split(/[,,y\n]+/).map(item => ({ name: item.trim() })).filter(i => i.name.length > 0);
+  }
+
+  try {
+    const response = await ai.models.generateContent({
+      model: "gemini-1.5-flash",
+      contents: `Convierte este dictado de voz de lista de compras en un array JSON de objetos: "${text}".
+      Cada objeto debe tener:
+      - name: nombre del producto (en singular, capitalizado)
+      - quantity: número de unidades (opcional, null si no se especifica)
+      - unit: unidad de medida (opcional, null si no se especifica)
+      
+      Ejemplo input: "necesito comprar tres litros de leche dos kilos de arroz y una lechuga"
+      Ejemplo output: [{"name": "Leche", "quantity": 3, "unit": "l"}, {"name": "Arroz", "quantity": 2, "unit": "kg"}, {"name": "Lechuga", "quantity": 1, "unit": "uds"}]`,
+      config: {
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: Type.ARRAY,
+          items: {
+            type: Type.OBJECT,
+            properties: {
+              name: { type: Type.STRING },
+              quantity: { type: Type.NUMBER, nullable: true },
+              unit: { type: Type.STRING, nullable: true }
+            },
+            required: ["name"]
+          }
+        }
+      }
+    });
+
+    return JSON.parse(response.text || '[]') as ParsedVoiceItem[];
+  } catch (error) {
+    console.error("Error parsing voice input:", error);
+    return text.split(/[,,y\n]+/).map(item => ({ name: item.trim() })).filter(i => i.name.length > 0);
+  }
+}
