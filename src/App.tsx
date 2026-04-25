@@ -71,7 +71,8 @@ import {
   Car,
   Footprints,
   Clock,
-  Filter
+  Filter,
+  Info
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { analyzeItem, getSmartRecommendations, parseVoiceInput, ItemInfo, ParsedVoiceItem } from './lib/gemini';
@@ -2206,9 +2207,17 @@ function StoresView({ onOpenMenu }: { onOpenMenu: () => void }) {
   };
 
   const getTravelTime = (distanceKm: number, mode: 'car' | 'walking') => {
-    const speed = mode === 'car' ? 30 : 5; // km/h
-    const time = (distanceKm / speed) * 60;
-    const padding = mode === 'car' ? 2 : 1;
+    // Factor de circuidad: En ciudad, la ruta real suele ser significativamente más larga que la línea recta.
+    // Caminando: ~80% más (cruces, calles no directas). Auto: ~50% más.
+    const circuityFactor = mode === 'car' ? 1.5 : 1.8; 
+    const adjustedDist = distanceKm * circuityFactor;
+    
+    // Peatón: 4km/h (ritmo normal de ciudad). Auto: 22km/h (promedio urbano con semáforos).
+    const speed = mode === 'car' ? 22 : 4; 
+    const time = (adjustedDist / speed) * 60;
+    
+    // Tiempos fijos de "arranque" (semáforos, buscar entrada, etc)
+    const padding = mode === 'car' ? 3 : 1;
     return Math.max(Math.round(time + padding), 1);
   };
 
@@ -2530,7 +2539,7 @@ function StoresView({ onOpenMenu }: { onOpenMenu: () => void }) {
                     </div>
                   </div>
                 </div>
-                <div className="px-2 py-0.5 bg-gray-100 rounded-md text-[10px] font-bold text-gray-600 flex-none">
+                <div className="px-2 py-0.5 bg-gray-100 border border-gray-200 rounded-md text-[10px] font-bold text-gray-500 flex-none group-hover:bg-white transition-colors">
                   {store.distance < 1 ? `${(store.distance * 1000).toFixed(0)}m` : `${store.distance.toFixed(1)}km`}
                 </div>
               </div>
@@ -2554,6 +2563,21 @@ function StoresView({ onOpenMenu }: { onOpenMenu: () => void }) {
           ))}
         </div>
       )}
+
+      {/* FOOTER DE INFORMACIÓN */}
+      <div className="mt-8 p-4 bg-blue-50/50 border border-blue-100 rounded-2xl flex items-start gap-4">
+        <div className="w-8 h-8 bg-blue-100 rounded-full flex items-center justify-center flex-none">
+          <Info className="w-4 h-4 text-blue-600" />
+        </div>
+        <div>
+          <p className="text-xs font-bold text-blue-900 uppercase tracking-wider">Aviso de Estimación</p>
+          <p className="text-[11px] text-blue-700 mt-1 leading-relaxed">
+            Las distancias y tiempos son una <strong>estimación basada en el trayecto promedio</strong>. 
+            Factores como semáforos, obras o barreras geográficas pueden variar el tiempo real. 
+            Haz clic en un local para ver la ruta exacta y el tráfico en Google Maps.
+          </p>
+        </div>
+      </div>
     </div>
   );
 }
