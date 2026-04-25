@@ -2182,7 +2182,7 @@ function AuthWall({ onLogin, onGoogleLogin, onReset, onDemo, isLoading, status, 
   );
 }
 
-const BIG_CHAINS = ['Lider', 'Jumbo', 'Santa Isabel', 'Unimarc', 'Tottus', 'Acuenta'];
+const BIG_CHAINS = ['Lider', 'Jumbo', 'Santa Isabel', 'Unimarc', 'Tottus', 'Acuenta', 'Mayorista 10', 'Erbi', 'Oxxo', 'Ok Market'];
 
 function StoresView({ onOpenMenu }: { onOpenMenu: () => void }) {
   const [coords, setCoords] = useState<{ latitude: number; longitude: number } | null>(null);
@@ -2226,7 +2226,8 @@ function StoresView({ onOpenMenu }: { onOpenMenu: () => void }) {
     if (n.includes('unimarc')) return '🔴';
     if (n.includes('tottus')) return '🍏';
     if (n.includes('acuenta')) return '💰';
-    if (n.includes('oxxo') || n.includes('ok market')) return '🏪';
+    if (n.includes('mayorista 10')) return '📦';
+    if (n.includes('erbi') || n.includes('oxxo') || n.includes('ok market')) return '🏪';
     return '🏠';
   };
 
@@ -2272,22 +2273,57 @@ function StoresView({ onOpenMenu }: { onOpenMenu: () => void }) {
       return;
     }
 
+    const options = {
+      enableHighAccuracy: false, // Menos exigente para evitar fallos en escritorio
+      timeout: 10000,
+      maximumAge: 60000
+    };
+
     navigator.geolocation.getCurrentPosition(
       async (pos) => {
         const { latitude, longitude } = pos.coords;
         setCoords({ latitude, longitude });
         
         try {
-          const query = `[out:json];node["shop"~"supermarket|convenience|grocery"](around:5000,${latitude},${longitude});out;`;
-          const response = await fetch(`https://overpass-api.de/api/interpreter?data=${encodeURIComponent(query)}`);
+          const query = `[out:json];nwr["shop"~"supermarket|convenience|grocery"](around:5000,${latitude},${longitude});out center;`;
+          // Intentar con una URL de respaldo si la principal falla
+          const endpoints = [
+            'https://overpass-api.de/api/interpreter',
+            'https://overpass.kumi.systems/api/interpreter',
+            'https://lz4.overpass-api.de/api/interpreter'
+          ];
+          
+          let response: Response | null = null;
+          let lastError: any = null;
+
+          for (const url of endpoints) {
+            try {
+              response = await fetch(`${url}?data=${encodeURIComponent(query)}`);
+              if (response.ok) break;
+            } catch (e) {
+              lastError = e;
+              continue;
+            }
+          }
+
+          if (!response || !response.ok) {
+            throw lastError || new Error("Todos los mirrors de mapas fallaron.");
+          }
+
           const data = await response.json();
           
           const processedStores = data.elements.map((el: any) => {
-            const dist = calculateDistance(latitude, longitude, el.lat, el.lon);
-            const hours = el.tags.opening_hours || "08:30-21:00";
-            const isOpen = checkIsOpen(hours);
-            const name = el.tags.name || "Almacén";
-            const brand = el.tags.brand || "";
+            const lat = el.lat || el.center?.lat;
+            const lon = el.lon || el.center?.lon;
+            
+            if (!lat || !lon) return null;
+
+            const dist = calculateDistance(latitude, longitude, lat, lon);
+            const hours = el.tags.opening_hours;
+            const isOpen = hours ? checkIsOpen(hours) : true;
+            const displayHours = hours || "08:30-21:00";
+            const name = el.tags.name || el.tags.brand || el.tags.operator || "Almacén";
+            const brand = el.tags.brand || el.tags.operator || "";
             const catInfo = getStoreCategory(name, brand);
 
             return {
@@ -2295,30 +2331,37 @@ function StoresView({ onOpenMenu }: { onOpenMenu: () => void }) {
               name: name,
               brandName: catInfo.brandName,
               isBigChain: catInfo.category === 'big_chain',
-              lat: el.lat,
-              lon: el.lon,
+              lat: lat,
+              lon: lon,
               distance: dist,
-              openingHours: hours,
+              openingHours: displayHours,
               carTime: getTravelTime(dist, 'car'),
               walkTime: getTravelTime(dist, 'walking'),
               icon: getStoreIcon(name),
               isOpen
             };
-          }).sort((a: any, b: any) => a.distance - b.distance);
+          }).filter(Boolean).sort((a: any, b: any) => a.distance - b.distance);
 
-          setAllStores(processedStores.slice(0, 25));
+          setAllStores(processedStores.slice(0, 50));
           setLoading(false);
+          setError(null);
         } catch (err) {
           console.error("Error fetching stores:", err);
-          setError("No pudimos cargar los locales. Revisa tu conexión.");
+          setError("Error de Red: El servicio de mapas no responde. Revisa tu conexión o intenta más tarde.");
           setLoading(false);
         }
       },
       (err) => {
-        setError("Permiso de ubicación denegado o error de señal");
+        console.error("Geolocation error:", err);
+        let msg = "Error al obtener ubicación";
+        if (err.code === 1) msg = "Acceso Denegado: Permite el uso de tu ubicación en los ajustes del navegador.";
+        if (err.code === 2) msg = "Ubicación No Disponible: El GPS no pudo determinar tu posición regional o de señal.";
+        if (err.code === 3) msg = "Tiempo Agotado: Se tardó demasiado en obtener la ubicación.";
+        
+        setError(msg);
         setLoading(false);
       },
-      { timeout: 10000 }
+      options
     );
   }, []);
 
