@@ -63,7 +63,11 @@ import {
   Mail,
   Menu,
   ArrowRightLeft,
-  FolderPlus
+  FolderPlus,
+  MapPin,
+  Compass,
+  AlertTriangle,
+  ExternalLink
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { analyzeItem, getSmartRecommendations, ItemInfo } from './lib/gemini';
@@ -288,6 +292,7 @@ export default function App() {
   const [searchQuery, setSearchQuery] = useState('');
   const [lists, setLists] = useState<ShoppingList[]>([]);
   const [activeListId, setActiveListId] = useState<string | null>(null);
+  const [currentView, setCurrentView] = useState<'list' | 'stores'>('list');
   const [activities, setActivities] = useState<ActivityItem[]>([]);
   const [syncedUsers, setSyncedUsers] = useState<UserProfile[]>([]);
   const [recommendations, setRecommendations] = useState<string[]>([]);
@@ -304,7 +309,7 @@ export default function App() {
     const handleScroll = () => {
       // Usar tanto scrollY como documentElement.scrollTop para máxima compatibilidad
       const scrollPos = window.scrollY || document.documentElement.scrollTop;
-      setIsScrolled(scrollPos > 30);
+      setIsScrolled(scrollPos > 60);
     };
     window.addEventListener('scroll', handleScroll, { passive: true });
     return () => window.removeEventListener('scroll', handleScroll);
@@ -623,6 +628,7 @@ export default function App() {
     const q = query(
       activitiesCollection, 
       where('familyId', '==', profile.familyId),
+      orderBy('timestamp', 'desc'),
       limit(10)
     );
     return onSnapshot(q, (snapshot) => {
@@ -772,7 +778,7 @@ export default function App() {
       const docRef = await addDoc(itemsCollection, itemData);
       addLog(`Nube OK: ${docRef.id.substring(0,5)}`);
       
-      logActivity('add', name.trim(), itemData.category);
+      await logActivity('add', name.trim(), itemData.category);
       
       if (newItemName === name) {
         setNewItemName('');
@@ -787,7 +793,7 @@ export default function App() {
 
   const toggleItem = async (item: GroceryItem) => {
     await updateDoc(doc(db, 'items', item.id), { checked: !item.checked });
-    if (!item.checked) logActivity('check', item.name);
+    if (!item.checked) await logActivity('check', item.name);
   };
 
   const updateItemCategory = async (item: GroceryItem, newCategory: string) => {
@@ -840,7 +846,7 @@ export default function App() {
 
   const deleteItem = async (item: GroceryItem) => {
     await deleteDoc(doc(db, 'items', item.id));
-    logActivity('delete', item.name);
+    await logActivity('delete', item.name);
   };
 
   const clearChecked = async () => {
@@ -848,7 +854,7 @@ export default function App() {
     const batch = writeBatch(db);
     checkedItems.forEach(i => batch.delete(doc(db, 'items', i.id)));
     await batch.commit();
-    logActivity('clear', `${checkedItems.length} productos`);
+    await logActivity('clear', `${checkedItems.length} productos`);
   };
 
   const activeCategories = useMemo(() => {
@@ -937,6 +943,7 @@ export default function App() {
 
   const deleteList = async (listId: string) => {
     try {
+      const listName = lists.find(l => l.id === listId)?.name || 'una lista';
       addLog(`Borrando lista: ${listId}...`);
       const batch = writeBatch(db);
       batch.delete(doc(db, 'lists', listId));
@@ -944,6 +951,8 @@ export default function App() {
         batch.delete(doc(db, 'items', item.id));
       });
       await batch.commit();
+      
+      await logActivity('delete', `Lista: ${listName}`);
       
       if (activeListId === listId) {
         setActiveListId(lists.find(l => l.id !== listId)?.id || null);
@@ -1078,10 +1087,10 @@ export default function App() {
                 {lists.map(l => (
                   <div key={l.id} className="group/list relative">
                     <button 
-                      onClick={() => { setActiveListId(l.id); setIsSidebarOpen(false); }}
+                      onClick={() => { setActiveListId(l.id); setCurrentView('list'); setIsSidebarOpen(false); }}
                       className={cn(
                         "w-full flex items-center gap-3 px-3 py-2.5 rounded-xl transition-all pr-12",
-                        activeListId === l.id ? "bg-accent text-white shadow-md shadow-accent/20" : "hover:bg-gray-50 text-text-secondary"
+                        currentView === 'list' && activeListId === l.id ? "bg-accent text-white shadow-md shadow-accent/20" : "hover:bg-gray-50 text-text-secondary"
                       )}
                     >
                       <div className={cn("w-2 h-2 rounded-full shrink-0", activeListId === l.id ? "bg-white" : "")} style={{ backgroundColor: activeListId === l.id ? undefined : l.color }} />
@@ -1104,6 +1113,25 @@ export default function App() {
                     </div>
                   </div>
                 ))}
+              </div>
+            </div>
+
+            {/* Explora */}
+            <div>
+              <h3 className="text-[10px] font-bold uppercase tracking-widest text-text-secondary mb-3 flex items-center gap-2">
+                <Compass className="w-3 h-3" /> Explorar
+              </h3>
+              <div className="space-y-1">
+                <button 
+                  onClick={() => { setCurrentView('stores'); setActiveListId(null); setIsSidebarOpen(false); }}
+                  className={cn(
+                    "w-full flex items-center gap-3 px-3 py-2.5 rounded-xl transition-all",
+                    currentView === 'stores' ? "bg-accent text-white shadow-md shadow-accent/20" : "hover:bg-gray-50 text-text-secondary"
+                  )}
+                >
+                  <MapPin className="w-4 h-4" />
+                  <span className="text-sm font-semibold">Supermercados</span>
+                </button>
               </div>
             </div>
 
@@ -1166,18 +1194,27 @@ export default function App() {
         {/* Main Content Area */}
         <main className="flex-grow min-w-0 relative overflow-visible">
           
-          {/* Header & Search Persistent - Sticky on Mobile */}
-          <div className={cn(
-            "sticky top-0 z-[100] transition-all duration-300 lg:static lg:bg-transparent lg:backdrop-blur-none lg:p-0 lg:mx-0 lg:border-none",
-            isScrolled 
-              ? "bg-white p-2 px-4 border-b border-border shadow-lg -mx-4 md:-mx-8" 
-              : "bg-transparent p-4 md:p-8 lg:p-12 pb-4"
-          )}>
+          {currentView === 'stores' ? (
+            <StoresView />
+          ) : (
+            <>
+              {/* Header & Search Persistent - Sticky on Mobile */}
+              <div className={cn(
+                "sticky top-0 z-[100] transition-all duration-300 lg:static lg:bg-transparent lg:backdrop-blur-none lg:p-0 lg:mx-0 lg:border-none",
+                isScrolled 
+                  ? "bg-white/95 backdrop-blur-md p-3 px-4 border-b border-border shadow-md -mx-4 md:-mx-8" 
+                  : "bg-transparent p-4 md:p-8 lg:p-12 pb-6"
+              )}>
             {/* Top Bar Mobile (Hides on scroll to save space) */}
-            <div className={cn(
-              "lg:hidden flex items-center justify-between gap-2 overflow-hidden transition-all duration-300 transform-gpu",
-              isScrolled ? "h-0 opacity-0 mb-0 scale-95" : "h-auto opacity-100 mb-4 scale-100"
-            )}>
+            <motion.div 
+               animate={{ 
+                 height: isScrolled ? 0 : 'auto', 
+                 opacity: isScrolled ? 0 : 1,
+                 marginBottom: isScrolled ? 0 : 16,
+                 scale: isScrolled ? 0.95 : 1
+               }}
+               className="lg:hidden flex items-center justify-between gap-2 overflow-hidden transition-all duration-300 transform-gpu"
+            >
               <button onClick={() => setIsSidebarOpen(true)} className="p-2 bg-white border border-border rounded-xl shadow-sm active:scale-95 transition-all">
                 <Menu className="w-5 h-5 text-text-main" />
               </button>
@@ -1190,7 +1227,7 @@ export default function App() {
                   <Zap className="w-5 h-5" />
                 </button>
               </div>
-            </div>
+            </motion.div>
 
             <header className="hidden lg:flex items-center justify-between mb-8">
               <div className="flex flex-col">
@@ -1236,25 +1273,16 @@ export default function App() {
             </header>
 
             {/* In-header Search bar for persistence */}
-            <div className={cn(
-              "relative group transition-all duration-300",
-              isScrolled ? "max-w-2xl mx-auto" : "w-full"
-            )}>
-              <div className={cn(
-                "absolute left-4 top-1/2 -translate-y-1/2 text-gray-400 group-focus-within:text-accent transition-all",
-                isScrolled ? "scale-90" : "scale-100"
-              )}>
-                <Search className={cn("transition-all", isScrolled ? "w-3.5 h-3.5" : "w-4 h-4")} />
+            <div className="relative group w-full max-w-2xl mx-auto">
+              <div className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400 group-focus-within:text-accent transition-all">
+                <Search className="w-4 h-4" />
               </div>
               <input 
                 type="text"
                 value={searchQuery}
                 onChange={e => setSearchQuery(e.target.value)}
-                placeholder={isScrolled ? "Buscar productos..." : "Busca productos o pasillos..."}
-                className={cn(
-                  "w-full bg-white border rounded-2xl pl-11 pr-4 font-bold text-text-main placeholder:text-gray-400 focus:ring-4 focus:ring-accent/10 focus:border-accent outline-none transition-all shadow-sm",
-                  isScrolled ? "py-2 text-xs h-9 border-border/60" : "py-3.5 text-sm h-12 border-border shadow-black/5"
-                )}
+                placeholder="Busca productos o pasillos..."
+                className="w-full h-11 bg-white border border-border rounded-2xl pl-11 pr-4 font-bold text-sm text-text-main placeholder:text-gray-400 focus:ring-4 focus:ring-accent/10 focus:border-accent outline-none transition-all shadow-sm shadow-black/5"
               />
               {searchQuery && (
                 <button 
@@ -1292,8 +1320,12 @@ export default function App() {
 
           {/* Suggestions Bar */}
           <div className="space-y-4">
-            {!shoppingMode && !searchQuery && (
-            <div className="space-y-2">
+            {!shoppingMode && (
+            <motion.div 
+               animate={{ height: searchQuery ? 0 : 'auto', opacity: searchQuery ? 0 : 1, marginBottom: searchQuery ? 0 : 16 }}
+               className="overflow-hidden"
+            >
+              <div className="space-y-2">
 
               <div className="flex items-center justify-between text-text-secondary">
                 <div className="flex items-center gap-2">
@@ -1344,6 +1376,7 @@ export default function App() {
                 )
               )}
             </div>
+          </motion.div>
           )}
         </div>
 
@@ -1489,7 +1522,9 @@ export default function App() {
             </div>
           )}
           </div>
-        </main>
+        </>
+      )}
+    </main>
       </div>
 
       {/* Settings Modal */}
@@ -1997,6 +2032,134 @@ function AuthWall({ onLogin, onGoogleLogin, onReset, onDemo, isLoading, status, 
           </button>
         </div>
       </div>
+    </div>
+  );
+}
+
+function StoresView() {
+  const [coords, setCoords] = useState<{ latitude: number; longitude: number } | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    if (!navigator.geolocation) {
+      setError("Tu navegador no soporta geolocalización");
+      setLoading(false);
+      return;
+    }
+
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        setCoords({ latitude: pos.coords.latitude, longitude: pos.coords.longitude });
+        setLoading(false);
+      },
+      (err) => {
+        setError("Permiso de ubicación denegado o error de señal");
+        setLoading(false);
+      },
+      { timeout: 10000 }
+    );
+  }, []);
+
+  const supermarkets = [
+    { name: 'Lider', icon: '🛒' },
+    { name: 'Jumbo', icon: '🐘' },
+    { name: 'Santa Isabel', icon: '🚩' },
+    { name: 'Unimarc', icon: '🔴' },
+    { name: 'Tottus', icon: '🍏' },
+    { name: 'Acuenta', icon: '💰' },
+  ];
+
+  if (loading) return (
+    <div className="flex flex-col items-center justify-center p-12 text-center h-[60vh] space-y-6">
+      <div className="relative">
+        <div className="w-16 h-16 border-4 border-accent/10 rounded-full" />
+        <div className="w-16 h-16 border-4 border-accent border-t-transparent rounded-full animate-spin absolute top-0 left-0" />
+      </div>
+      <div className="space-y-2">
+        <p className="text-text-main font-black text-xl tracking-tight">Detectando tu GPS</p>
+        <p className="text-text-secondary text-sm font-medium">Buscando locales abiertos cerca de ti...</p>
+      </div>
+    </div>
+  );
+
+  return (
+    <div className="p-4 md:p-8 lg:p-12 space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500">
+      <div className="flex flex-col gap-2">
+        <div className="flex items-center gap-3">
+          <div className="w-12 h-12 bg-accent/10 rounded-2xl grid place-items-center">
+            <MapPin className="w-6 h-6 text-accent" />
+          </div>
+          <div>
+            <h2 className="text-3xl font-black tracking-tighter text-text-main">Supermercados</h2>
+            <p className="text-sm text-text-secondary font-medium italic">Mostrando opciones en base a tu ubicación</p>
+          </div>
+        </div>
+      </div>
+
+      {error ? (
+        <div className="bg-red-50 border border-red-100 p-8 rounded-[2rem] text-center space-y-4 shadow-xl shadow-red-100/20 max-w-lg mx-auto mt-12">
+          <div className="w-16 h-16 bg-red-100 rounded-full grid place-items-center mx-auto text-red-500">
+             <AlertTriangle className="w-8 h-8" />
+          </div>
+          <div className="space-y-2">
+            <h3 className="text-lg font-black text-red-950">Ubicación No Disponible</h3>
+            <p className="text-red-700 font-bold text-sm">{error}</p>
+          </div>
+          <p className="text-xs text-red-600/70 leading-relaxed">
+            Para ver los locales cercanos necesitamos acceso a tu ubicación. 
+            Por favor, activa el GPS en tu dispositivo o permite el acceso en tu navegador y recarga la página.
+          </p>
+          <button 
+            onClick={() => window.location.reload()}
+            className="w-full py-3 bg-red-500 text-white rounded-2xl font-bold text-xs uppercase tracking-widest shadow-lg shadow-red-500/30 active:scale-95 transition-all"
+          >
+            Reintentar Acceso
+          </button>
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
+          {supermarkets.map((store, i) => (
+            <motion.a
+               key={i}
+               initial={{ opacity: 0, y: 20 }}
+               animate={{ opacity: 1, y: 0 }}
+               transition={{ delay: i * 0.05, type: "spring", stiffness: 200 }}
+               href={`https://www.google.com/maps/search/supermercado+${store.name}+cerca+de+mi/@${coords?.latitude},${coords?.longitude},15z`}
+               target="_blank"
+               rel="noopener noreferrer"
+               className="bg-white border border-border p-6 rounded-[2rem] group hover:border-accent hover:shadow-2xl hover:shadow-accent/10 transition-all active:scale-[0.98] flex flex-col gap-6 text-left shadow-soft relative overflow-hidden"
+            >
+              <div className="absolute top-0 right-0 w-24 h-24 bg-accent/5 rounded-bl-[4rem] group-hover:scale-110 transition-transform" />
+              
+              <div className="flex items-start justify-between relative">
+                <div className="w-14 h-14 bg-gray-50 border border-border rounded-2xl flex items-center justify-center text-3xl shadow-sm group-hover:bg-white transition-colors">
+                  {store.icon}
+                </div>
+                <div className="p-2.5 bg-gray-50 border border-border rounded-xl group-hover:bg-accent group-hover:text-white group-hover:border-accent transition-all shadow-sm">
+                  <ExternalLink className="w-4 h-4" />
+                </div>
+              </div>
+
+              <div className="relative">
+                <h3 className="font-black text-xl text-text-main group-hover:text-accent transition-colors tracking-tight">
+                  {store.name}
+                </h3>
+                <div className="flex items-center gap-2 mt-2">
+                  <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
+                  <span className="text-[10px] font-black text-gray-400 uppercase tracking-widest">Abierto según maps</span>
+                </div>
+              </div>
+
+              <div className="pt-4 border-t border-border/50 mt-auto">
+                <p className="text-[10px] font-black text-accent uppercase tracking-widest flex items-center gap-2">
+                  Ver Disponibilidad y Ruta <ChevronRight className="w-3 h-3" />
+                </p>
+              </div>
+            </motion.a>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
