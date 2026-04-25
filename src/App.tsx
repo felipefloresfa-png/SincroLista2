@@ -75,6 +75,7 @@ import {
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { analyzeItem, getSmartRecommendations, parseVoiceInput, ItemInfo, ParsedVoiceItem } from './lib/gemini';
+import { getInstantCategory } from './lib/itemCache';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 
@@ -708,7 +709,8 @@ export default function App() {
       activitiesCollection, 
       where('familyId', '==', profile.familyId),
       // Eliminamos orderBy temporalmente para evitar el error de índice falta
-      limit(20)
+      // Traemos más actividades para tener mejor memoria de categorización
+      limit(100)
     );
     return onSnapshot(q, (snapshot) => {
       const fetched = snapshot.docs.map(d => ({ id: d.id, ...d.data() })) as ActivityItem[];
@@ -718,7 +720,7 @@ export default function App() {
         const timeB = b.timestamp?.toMillis?.() || 0;
         return timeB - timeA;
       });
-      setActivities(sorted.slice(0, 10));
+      setActivities(sorted);
     });
   }, [profile?.familyId]);
 
@@ -832,9 +834,13 @@ export default function App() {
         // MEMORIA DE PASILLOS: Buscamos si este producto ya ha sido categorizado antes por el grupo
         const existingAssignment = items.find(i => i.name.toLowerCase() === finalName.toLowerCase());
         const historicalAssignment = activities.find(a => a.itemName?.toLowerCase() === finalName.toLowerCase() && a.category);
+        const fastCategory = getInstantCategory(finalName);
         
         let analysis: any;
-        if (existingAssignment) {
+        if (fastCategory) {
+          addLog("Categoría instantánea detectada...");
+          analysis = { category: fastCategory.category, priorityLevel: fastCategory.priorityLevel };
+        } else if (existingAssignment) {
           addLog("Usando pasillo de la lista actual...");
           analysis = { category: existingAssignment.category, priorityLevel: existingAssignment.priority };
         } else if (historicalAssignment) {
@@ -1272,7 +1278,7 @@ export default function App() {
                 <History className="w-3 h-3" /> Actividad
               </h3>
               <div className="space-y-4 max-h-[300px] overflow-y-auto scrollbar-hide pr-2">
-                {activities.map(a => {
+                {activities.slice(0, 10).map(a => {
                   const user = syncedUsers.find(u => u.uid === a.userId);
                   const userName = user?.uid === profile?.uid ? 'Tú' : (user?.displayName.split(' ')[0] || 'Alguien');
                   const date = a.timestamp?.toDate ? a.timestamp.toDate() : (a.timestamp ? new Date(a.timestamp) : null);
