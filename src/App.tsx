@@ -707,12 +707,18 @@ export default function App() {
     const q = query(
       activitiesCollection, 
       where('familyId', '==', profile.familyId),
-      orderBy('timestamp', 'desc'),
-      limit(10)
+      // Eliminamos orderBy temporalmente para evitar el error de índice falta
+      limit(20)
     );
     return onSnapshot(q, (snapshot) => {
       const fetched = snapshot.docs.map(d => ({ id: d.id, ...d.data() })) as ActivityItem[];
-      setActivities(fetched.sort((a, b) => (b.timestamp?.toMillis?.() || 0) - (a.timestamp?.toMillis?.() || 0)));
+      // Ordenamos en memoria para no requerir índice compuesto en Firestore
+      const sorted = [...fetched].sort((a, b) => {
+        const timeA = a.timestamp?.toMillis?.() || 0;
+        const timeB = b.timestamp?.toMillis?.() || 0;
+        return timeB - timeA;
+      });
+      setActivities(sorted.slice(0, 10));
     });
   }, [profile?.familyId]);
 
@@ -780,7 +786,7 @@ export default function App() {
       userId: profile.uid, 
       type, 
       itemName, 
-      category, 
+      category: category || 'Otros', // Evitar undefined que causa error en Firestore
       familyId: profile.familyId, 
       timestamp: serverTimestamp() 
     });
@@ -805,81 +811,115 @@ export default function App() {
       return;
     }
 
-    if (!listToUse) {
-      addLog("Reparando lista...");
-      const newId = await createDefaultList(profile.familyId);
-      if (newId) {
-        addLog("Re-intentando con ID listo.");
-        addItem(name, qty, newId);
+    // Capitalizar la primera letra siempre
+    const capitalizedName = name.trim().charAt(0).toUpperCase() + name.trim().slice(1);
+
+    const proceedWithAdd = async (finalName: string, finalQty: string, finalId: string | null) => {
+      if (!finalId) {
+        addLog("Reparando lista...");
+        const newId = await createDefaultList(profile.familyId);
+        if (newId) {
+          addLog("Re-intentando con ID listo.");
+          proceedWithAdd(finalName, finalQty, newId);
+        }
+        return;
       }
+      
+      try {
+        if (newItemName === name) setIsAdding(true); 
+        addLog(`Guardando [${finalName}]...`);
+        
+        // MEMORIA DE PASILLOS: Buscamos si este producto ya ha sido categorizado antes por el grupo
+        const existingAssignment = items.find(i => i.name.toLowerCase() === finalName.toLowerCase());
+        const historicalAssignment = activities.find(a => a.itemName?.toLowerCase() === finalName.toLowerCase() && a.category);
+        
+        let analysis: any;
+        if (existingAssignment) {
+          addLog("Usando pasillo de la lista actual...");
+          analysis = { category: existingAssignment.category, priorityLevel: existingAssignment.priority };
+        } else if (historicalAssignment) {
+          addLog("Recuperando pasillo del historial...");
+          analysis = { category: historicalAssignment.category, priorityLevel: 'medium' };
+        }
+        
+        const itemData = {
+          listId: finalId,
+          familyId: profile.familyId,
+          name: finalName,
+          quantity: finalQty || '1',
+          category: analysis?.category || 'Otros',
+          priority: (analysis?.priorityLevel === 'high' ? 'high' : 'medium') as 'high' | 'medium',
+          checked: false,
+          addedBy: profile.displayName || 'Usuario',
+          createdAt: serverTimestamp()
+        };
+
+        // MOSTRAR AL INSTANTE (Modo Optimista local)
+        const tempId = 'temp-item-' + Date.now();
+        const visualItem = { id: tempId, ...itemData } as any;
+        setItems(prev => {
+          if (prev.some(i => i.name === finalName && i.listId === finalId)) return prev;
+          return [visualItem, ...prev];
+        });
+        
+        // GUARDAR EN NUBE DE INMEDIATO
+        const docRef = await addDoc(itemsCollection, itemData);
+        
+        // ANALIZAR EN SEGUNDO PLANO SI NO HABÍA CACHÉ
+        if (!analysis || analysis.category === 'Otros') {
+          (async () => {
+            try {
+              const result = await analyzeItem(finalName);
+              if (result && result.category && result.category !== 'Otros') {
+                await updateDoc(doc(db, 'items', docRef.id), { 
+                   category: result.category,
+                   priority: (result.priorityLevel === 'high' ? 'high' : 'medium')
+                });
+                console.log(`IA fondo: ${finalName} -> ${result.category}`);
+              }
+            } catch (bgError) {
+              console.error("Error en análisis de fondo:", bgError);
+            }
+          })();
+        }
+
+        addLog(`Nube OK: ${docRef.id.substring(0,5)}`);
+        await logActivity('add', finalName, itemData.category);
+        
+        if (newItemName === name) {
+          setNewItemName('');
+          setNewItemQty('1');
+        }
+      } catch (e: any) {
+        addLog(`Error nube: ${e.code || 'local'}`);
+      } finally {
+        setIsAdding(false);
+      }
+    };
+
+    // SISTEMA DE ALERTA DE DUPLICADOS (Usando diálogo personalizado)
+    const isDuplicate = items.some(i => 
+      i.name.toLowerCase() === capitalizedName.toLowerCase() && 
+      i.listId === listToUse &&
+      !i.checked 
+    );
+
+    if (isDuplicate) {
+      setPromptConfig({
+        isOpen: true,
+        type: 'confirm',
+        title: "Producto Duplicado",
+        description: `"${capitalizedName}" ya está en tu lista actual sin marcar. ¿Seguro que quieres agregarlo de todas formas?`,
+        initialValue: '',
+        onConfirm: () => {
+          setPromptConfig(prev => ({ ...prev, isOpen: false }));
+          proceedWithAdd(capitalizedName, qty, listToUse);
+        }
+      });
       return;
     }
-    
-    try {
-      if (newItemName === name) setIsAdding(true); 
-      addLog(`Guardando [${name}]...`);
-      
-      // MEMORIA DE PASILLOS: Buscamos si este producto ya ha sido categorizado antes por el grupo
-      const existingAssignment = items.find(i => i.name.toLowerCase() === name.toLowerCase());
-      const historicalAssignment = activities.find(a => a.itemName?.toLowerCase() === name.toLowerCase() && a.category);
-      
-      let analysis: any;
-      if (existingAssignment) {
-        addLog("Usando pasillo de la lista actual...");
-        analysis = { category: existingAssignment.category, priorityLevel: existingAssignment.priority };
-      } else if (historicalAssignment) {
-        addLog("Recuperando pasillo del historial...");
-        analysis = { category: historicalAssignment.category, priorityLevel: 'medium' };
-      }
-      
-      if (!analysis || !analysis.category || analysis.category === 'Otros' || analysis.category === 'Sin Categoría') {
-        addLog(`IA: Analizando "${name}"...`);
-        try {
-          const analysisPromise = analyzeItem(name);
-          const timeoutPromise = new Promise<any>((_, reject) => setTimeout(() => reject(new Error("Timeout (12s)")), 12000));
-          analysis = await Promise.race([analysisPromise, timeoutPromise]);
-          addLog(`IA Éxito: -> ${analysis.category}`);
-        } catch (iaError: any) {
-          addLog(`IA Fallo: ${iaError.message || "Error desconocido"}`);
-          analysis = { category: 'Otros', priorityLevel: 'medium' };
-        }
-      }
-      
-      const itemData = {
-        listId: listToUse,
-        familyId: profile.familyId,
-        name: name.trim(),
-        quantity: qty || '1',
-        category: analysis.category || 'Otros',
-        priority: (analysis.priorityLevel === 'high' ? 'high' : 'medium') as 'high' | 'medium',
-        checked: false,
-        addedBy: profile.displayName || 'Usuario',
-        createdAt: serverTimestamp()
-      };
 
-      // MOSTRAR AL INSTANTE (Modo Optimista)
-      const tempId = 'temp-item-' + Date.now();
-      const visualItem = { id: tempId, ...itemData } as any;
-      setItems(prev => {
-        // Evitamos duplicados locales si la sincronización es muy rápida
-        if (prev.some(i => i.name === name.trim() && i.listId === listToUse)) return prev;
-        return [visualItem, ...prev];
-      });
-      
-      const docRef = await addDoc(itemsCollection, itemData);
-      addLog(`Nube OK: ${docRef.id.substring(0,5)}`);
-      
-      await logActivity('add', name.trim(), itemData.category);
-      
-      if (newItemName === name) {
-        setNewItemName('');
-        setNewItemQty('1');
-      }
-    } catch (e: any) {
-      addLog(`Error nube: ${e.code || 'local'}`);
-    } finally {
-      setIsAdding(false);
-    }
+    proceedWithAdd(capitalizedName, qty, listToUse);
   };
 
   const toggleItem = async (item: GroceryItem) => {

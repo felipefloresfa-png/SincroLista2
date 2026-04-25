@@ -19,7 +19,7 @@ export async function analyzeItem(itemName: string): Promise<ItemInfo> {
 
   try {
     const response = await ai.models.generateContent({
-      model: "gemini-1.5-flash",
+      model: "gemini-3-flash-preview",
       contents: `Analiza este producto de supermercado: "${itemName}".
       Categorízalo en una de estas categorías estándar: 
       Frutas y Verduras, Carnes y Pescados, Lácteos y Huevos, Despensa, Panadería, Congelados, Bebidas, Alcohol, Higiene y Cuidado Personal, Limpieza del Hogar, Mascotas, Bebés, Otros.
@@ -74,7 +74,7 @@ export async function getSmartRecommendations(history: string[]) {
       Devuelve un array JSON de strings con solo los nombres de los productos.`;
 
     const response = await ai.models.generateContent({
-      model: "gemini-1.5-flash",
+      model: "gemini-3-flash-preview",
       contents: prompt,
       config: {
         responseMimeType: "application/json",
@@ -107,7 +107,7 @@ export async function parseVoiceInput(text: string): Promise<ParsedVoiceItem[]> 
 
   try {
     const response = await ai.models.generateContent({
-      model: "gemini-1.5-flash",
+      model: "gemini-3-flash-preview",
       contents: `Convierte este dictado de voz de lista de compras en un array JSON de objetos: "${text}".
       Cada objeto debe tener:
       - name: nombre del producto (en singular, capitalizado)
