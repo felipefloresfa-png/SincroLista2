@@ -53,6 +53,7 @@ import {
   Tag,
   MessageSquare,
   Users,
+  Link as LinkIcon,
   Layout,
   ChevronDown,
   UserPlus,
@@ -167,8 +168,10 @@ interface ActivityItem {
 
 function CopyCodeComponent({ code }: { code: string }) {
   const [isCopied, setIsCopied] = useState(false);
-
-  const shareMessage = `¡Hola! Únete a mi grupo en SincroLista para compartir nuestras listas de compras en tiempo real. Mi código es: ${code}`;
+  const [isUrlCopied, setIsUrlCopied] = useState(false);
+  
+  const invitationUrl = `https://sincro-lista2.vercel.app/?invite=${code}`;
+  const shareMessage = `¡Hola! Únete a mi grupo en SincroLista para compartir nuestras listas de compras en tiempo real. Usa este link: ${invitationUrl}`;
   
   const shareWhatsApp = () => {
     const url = `https://wa.me/?text=${encodeURIComponent(shareMessage)}`;
@@ -186,6 +189,7 @@ function CopyCodeComponent({ code }: { code: string }) {
         await navigator.share({
           title: 'Invitación a SincroLista',
           text: shareMessage,
+          url: invitationUrl
         });
       } catch (err) {
         console.error("Error sharing:", err);
@@ -193,27 +197,54 @@ function CopyCodeComponent({ code }: { code: string }) {
     }
   };
 
+  const copyUrl = async () => {
+    const success = await copyToClipboard(invitationUrl);
+    if (success) {
+      setIsUrlCopied(true);
+      setTimeout(() => setIsUrlCopied(false), 2000);
+    }
+  };
+
   return (
     <div className="space-y-3">
-      <div className={cn("inline-flex items-center gap-1.5 w-full bg-white border border-border rounded-xl px-3 py-2 shadow-xs group")}>
-        <code className="flex-grow text-[10px] font-mono text-text-main break-all">
-          {code}
-        </code>
+      <div className="space-y-2">
+        <div className={cn("inline-flex items-center gap-1.5 w-full bg-white border border-border rounded-xl px-3 py-2 shadow-xs group")}>
+          <div className="flex-grow flex flex-col min-w-0">
+            <span className="text-[8px] text-text-secondary uppercase font-black tracking-widest">Código</span>
+            <code className="text-[10px] font-mono text-text-main break-all">
+              {code}
+            </code>
+          </div>
+          <button 
+            onClick={async () => {
+              const success = await copyToClipboard(code);
+              if (success) {
+                setIsCopied(true);
+                setTimeout(() => setIsCopied(false), 2000);
+              }
+            }}
+            className={cn(
+              "p-2 rounded-xl transition-all active:scale-95",
+              isCopied ? "bg-green-500 text-white" : "bg-text-main text-white hover:bg-black"
+            )}
+            title="Copiar Código"
+          >
+            {isCopied ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+          </button>
+        </div>
+
         <button 
-          onClick={async () => {
-            const success = await copyToClipboard(code);
-            if (success) {
-              setIsCopied(true);
-              setTimeout(() => setIsCopied(false), 2000);
-            }
-          }}
+          onClick={copyUrl}
           className={cn(
-            "p-2 rounded-xl transition-all active:scale-95",
-            isCopied ? "bg-green-500 text-white" : "bg-text-main text-white hover:bg-black"
+            "w-full flex items-center justify-center gap-2 py-2 px-3 border rounded-xl text-[10px] font-black uppercase tracking-widest transition-all active:scale-95",
+            isUrlCopied ? "bg-green-500 text-white border-green-500" : "bg-white border-border text-text-main hover:bg-gray-50"
           )}
-          title="Copiar Código"
         >
-          {isCopied ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+          {isUrlCopied ? (
+            <><Check className="w-3.5 h-3.5" /> ¡Enlace Copiado!</>
+          ) : (
+            <><LinkIcon className="w-3.5 h-3.5" /> Copiar Enlace Directo</>
+          )}
         </button>
       </div>
 
@@ -248,6 +279,10 @@ export default function App() {
   const [user, setUser] = useState<FirebaseUser | null>(null);
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [isInitializing, setIsInitializing] = useState(true);
+  const [inviteCodeFromUrl, setInviteCodeFromUrl] = useState<string>(() => {
+    const params = new URLSearchParams(window.location.search);
+    return params.get('invite') || params.get('join') || params.get('familyId') || params.get('code') || '';
+  });
   const [isLoggingIn, setIsLoggingIn] = useState(false);
   const [items, setItems] = useState<GroceryItem[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
@@ -996,6 +1031,7 @@ export default function App() {
       status={statusMessage}
       logs={debugLogs}
       onDemo={handleDemoMode}
+      initialInviteCode={inviteCodeFromUrl}
     />
   );
 
@@ -1004,7 +1040,7 @@ export default function App() {
       
       {/* Mobile Header Overlay */}
       <div className={cn(
-        "lg:hidden fixed inset-0 z-40 bg-black/60 transition-opacity",
+        "lg:hidden fixed inset-0 z-[200] bg-black/60 transition-opacity",
         isSidebarOpen ? "opacity-100" : "opacity-0 pointer-events-none"
       )} onClick={() => setIsSidebarOpen(false)} />
 
@@ -1012,7 +1048,7 @@ export default function App() {
         
         {/* Sidebar */}
         <aside className={cn(
-          "fixed lg:sticky top-0 left-0 z-50 h-[100dvh] w-[280px] bg-white border-r border-border p-6 transition-transform flex flex-col shrink-0 overflow-y-auto scrollbar-hide",
+          "fixed lg:sticky top-0 left-0 z-[210] h-[100dvh] w-[280px] bg-white border-r border-border p-6 transition-transform flex flex-col shrink-0 overflow-y-auto scrollbar-hide",
           shoppingMode && "lg:opacity-40 lg:pointer-events-none",
           isSidebarOpen ? "translate-x-0" : "-translate-x-full lg:translate-x-0"
         )}>
@@ -1458,7 +1494,7 @@ export default function App() {
 
       {/* Settings Modal */}
       {isSettingsOpen && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
+        <div className="fixed inset-0 z-[300] flex items-center justify-center p-4">
           <motion.div 
              initial={{ opacity: 0 }} 
              animate={{ opacity: 1 }} 
@@ -1554,7 +1590,7 @@ export default function App() {
 
       {/* Custom Dialog / Prompt */}
       {promptConfig.isOpen && (
-        <div className="fixed inset-0 z-[100] grid place-items-center p-6">
+        <div className="fixed inset-0 z-[300] grid place-items-center p-6">
           <motion.div 
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
@@ -1850,18 +1886,19 @@ function ItemRow({ item, onToggle, onDelete, onEdit, onUpdateQty, onTogglePriori
   );
 }
 
-function AuthWall({ onLogin, onGoogleLogin, onReset, onDemo, isLoading, status, logs = [] }: { 
+function AuthWall({ onLogin, onGoogleLogin, onReset, onDemo, isLoading, status, logs = [], initialInviteCode = '' }: { 
   onLogin: (name: string, code?: string) => void, 
   onGoogleLogin: (code?: string) => void,
   onReset: () => void, 
   onDemo: () => void,
   isLoading: boolean, 
   status?: string,
-  logs?: string[]
+  logs?: string[],
+  initialInviteCode?: string
 }) {
   const [name, setName] = useState('');
-  const [code, setCode] = useState('');
-  const [showCodeInput, setShowCodeInput] = useState(false);
+  const [code, setCode] = useState(initialInviteCode);
+  const [showCodeInput, setShowCodeInput] = useState(!!initialInviteCode);
 
   return (
     <div className="min-h-screen bg-bg grid place-items-center p-6 text-center">
@@ -1951,40 +1988,13 @@ function AuthWall({ onLogin, onGoogleLogin, onReset, onDemo, isLoading, status, 
           </div>
         </form>
 
-        {logs.length > 0 && (
-          <div className="bg-black/90 p-4 rounded-2xl text-left border border-white/10">
-            <h4 className="text-[9px] font-black uppercase text-white/40 mb-2 tracking-tighter">Soporte Técnico (Logs)</h4>
-            <div className="space-y-1">
-              {logs.map((log, i) => (
-                <p key={i} className="text-[10px] font-mono text-green-400 break-words leading-[1.2]">{log}</p>
-              ))}
-            </div>
-          </div>
-        )}
-
-        <div className="space-y-6 pt-4 border-t border-border/50">
-           <div className="flex flex-col gap-2">
-              <button 
-                onClick={onReset}
-                className="text-[10px] font-bold text-text-secondary hover:text-accent flex items-center gap-2 mx-auto"
-              >
-                <RefreshCw className="w-3 h-3" /> Reiniciar conexión
-              </button>
-              
-              <button 
-                onClick={onDemo}
-                className="w-full py-3 bg-accent/5 border border-accent/20 rounded-2xl text-[11px] font-bold text-accent hover:bg-accent/10 transition-colors flex items-center justify-center gap-2"
-              >
-                <Zap className="w-4 h-4" /> Probar sin Firebase (Modo Demo)
-              </button>
-           </div>
-
-           <div className="bg-gray-50 p-4 rounded-2xl text-left border border-border">
-              <p className="text-[10px] text-text-secondary leading-relaxed">
-                ID: <span className="text-text-main font-bold">{firebaseConfig.projectId}</span><br/>
-                Host: <span className="text-accent underline break-all">{window.location.hostname}</span>
-              </p>
-           </div>
+        <div className="pt-4 border-t border-border/50">
+          <button 
+            onClick={onReset}
+            className="text-[10px] font-bold text-text-secondary hover:text-accent flex items-center gap-2 mx-auto"
+          >
+            <RefreshCw className="w-3 h-3" /> Reiniciar conexión
+          </button>
         </div>
       </div>
     </div>
