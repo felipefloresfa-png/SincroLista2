@@ -51,4 +51,12 @@
   .bottom-bar {
     @apply mt-8 bg-card border border-border rounded-2xl p-4 flex items-center gap-4 shadow-sm;
   }
+
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+  .no-scrollbar {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
 }

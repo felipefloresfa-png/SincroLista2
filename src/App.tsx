@@ -1198,7 +1198,7 @@ export default function App() {
         <main className="flex-grow min-w-0 relative overflow-visible">
           
           {currentView === 'stores' ? (
-            <StoresView />
+            <StoresView onOpenMenu={() => setIsSidebarOpen(true)} />
           ) : (
             <>
               {/* Header & Search Persistent - Sticky on Mobile */}
@@ -2039,12 +2039,15 @@ function AuthWall({ onLogin, onGoogleLogin, onReset, onDemo, isLoading, status, 
   );
 }
 
-function StoresView() {
+const BIG_CHAINS = ['Lider', 'Jumbo', 'Santa Isabel', 'Unimarc', 'Tottus', 'Acuenta'];
+
+function StoresView({ onOpenMenu }: { onOpenMenu: () => void }) {
   const [coords, setCoords] = useState<{ latitude: number; longitude: number } | null>(null);
   const [allStores, setAllStores] = useState<any[]>([]);
   const [filteredStores, setFilteredStores] = useState<any[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [selectedCategory, setSelectedCategory] = useState<'all' | 'big_chain' | 'others'>('all');
   const [selectedBrand, setSelectedBrand] = useState<string | null>(null);
   const [showOnlyOpen, setShowOnlyOpen] = useState(false);
 
@@ -2062,8 +2065,14 @@ function StoresView() {
   const getTravelTime = (distanceKm: number, mode: 'car' | 'walking') => {
     const speed = mode === 'car' ? 30 : 5; // km/h
     const time = (distanceKm / speed) * 60;
-    const padding = mode === 'walking' ? 1 : 2;
+    const padding = mode === 'car' ? 2 : 1;
     return Math.max(Math.round(time + padding), 1);
+  };
+
+  const getStoreCategory = (name: string, brand: string) => {
+    const searchStr = (name + ' ' + brand).toLowerCase();
+    const bigChainMatch = BIG_CHAINS.find(c => searchStr.includes(c.toLowerCase()));
+    return bigChainMatch ? { category: 'big_chain' as const, brandName: bigChainMatch } : { category: 'others' as const, brandName: null };
   };
 
   const getStoreIcon = (name: string) => {
@@ -2075,34 +2084,43 @@ function StoresView() {
     if (n.includes('tottus')) return '🍏';
     if (n.includes('acuenta')) return '💰';
     if (n.includes('oxxo') || n.includes('ok market')) return '🏪';
-    return '🏢';
+    return '🏠';
   };
 
   const checkIsOpen = (openingHours?: string) => {
-    if (!openingHours) return true; // Default to open if no info
+    if (!openingHours) return true;
     const now = new Date();
-    const timeStr = now.getHours().toString().padStart(2, '0') + ':' + now.getMinutes().toString().padStart(2, '0');
-    
-    // Simplistic check for formats like "08:00-21:00" or "08:30-22:00"
-    const match = openingHours.match(/(\d{1,2}:\d{2})\s*-\s*(\d{1,2}:\d{2})/);
-    if (match) {
-      const open = match[1].padStart(5, '0');
-      const close = match[2].padStart(5, '0');
-      return timeStr >= open && timeStr <= close;
+    const currentMinutes = now.getHours() * 60 + now.getMinutes();
+    const timeRanges = openingHours.match(/(\d{1,2}:\d{2})\s*-\s*(\d{1,2}:\d{2})/g);
+    if (timeRanges) {
+      return timeRanges.some(range => {
+        const [startStr, endStr] = range.split('-').map(t => t.trim());
+        const [sh, sm] = startStr.split(':').map(Number);
+        const [eh, em] = endStr.split(':').map(Number);
+        const start = sh * 60 + sm;
+        const end = eh * 60 + em;
+        return currentMinutes >= start && currentMinutes <= end;
+      });
     }
-    return true; // If we can't parse, assume open to be safe but warn in UI
+    return true; 
   };
 
   useEffect(() => {
     let result = allStores;
-    if (selectedBrand) {
-      result = result.filter(s => s.name.toLowerCase().includes(selectedBrand.toLowerCase()));
+    if (selectedCategory === 'big_chain') {
+       result = result.filter(s => s.isBigChain);
+       if (selectedBrand) {
+         result = result.filter(s => s.brandName === selectedBrand);
+       }
+    } else if (selectedCategory === 'others') {
+       result = result.filter(s => !s.isBigChain);
     }
+
     if (showOnlyOpen) {
       result = result.filter(s => s.isOpen);
     }
     setFilteredStores(result);
-  }, [selectedBrand, showOnlyOpen, allStores]);
+  }, [selectedCategory, selectedBrand, showOnlyOpen, allStores]);
 
   useEffect(() => {
     if (!navigator.geolocation) {
@@ -2117,7 +2135,7 @@ function StoresView() {
         setCoords({ latitude, longitude });
         
         try {
-          const query = `[out:json];node["shop"~"supermarket|convenience"](around:5000,${latitude},${longitude});out;`;
+          const query = `[out:json];node["shop"~"supermarket|convenience|grocery"](around:5000,${latitude},${longitude});out;`;
           const response = await fetch(`https://overpass-api.de/api/interpreter?data=${encodeURIComponent(query)}`);
           const data = await response.json();
           
@@ -2125,22 +2143,27 @@ function StoresView() {
             const dist = calculateDistance(latitude, longitude, el.lat, el.lon);
             const hours = el.tags.opening_hours || "08:30-21:00";
             const isOpen = checkIsOpen(hours);
+            const name = el.tags.name || "Almacén";
+            const brand = el.tags.brand || "";
+            const catInfo = getStoreCategory(name, brand);
+
             return {
               id: el.id,
-              name: el.tags.name || "Supermercado",
-              brand: el.tags.brand || el.tags.name || "Otros",
+              name: name,
+              brandName: catInfo.brandName,
+              isBigChain: catInfo.category === 'big_chain',
               lat: el.lat,
               lon: el.lon,
               distance: dist,
               openingHours: hours,
               carTime: getTravelTime(dist, 'car'),
               walkTime: getTravelTime(dist, 'walking'),
-              icon: getStoreIcon(el.tags.name || el.tags.brand || ""),
+              icon: getStoreIcon(name),
               isOpen
             };
           }).sort((a: any, b: any) => a.distance - b.distance);
 
-          setAllStores(processedStores.slice(0, 15));
+          setAllStores(processedStores.slice(0, 25));
           setLoading(false);
         } catch (err) {
           console.error("Error fetching stores:", err);
@@ -2155,17 +2178,6 @@ function StoresView() {
       { timeout: 10000 }
     );
   }, []);
-
-  const brands = Array.from(new Set(allStores.map(s => {
-    const n = s.name.toLowerCase();
-    if (n.includes('lider')) return 'Lider';
-    if (n.includes('jumbo')) return 'Jumbo';
-    if (n.includes('santa isabel')) return 'Santa Isabel';
-    if (n.includes('unimarc')) return 'Unimarc';
-    if (n.includes('tottus')) return 'Tottus';
-    if (n.includes('oxxo')) return 'Oxxo';
-    return null;
-  }).filter(Boolean))) as string[];
 
   if (loading) return (
     <div className="flex flex-col items-center justify-center p-12 text-center h-[60vh] space-y-6">
@@ -2182,38 +2194,85 @@ function StoresView() {
 
   return (
     <div className="p-4 md:p-8 lg:p-12 space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500">
-      <div className="flex flex-col md:flex-row md:items-end justify-between gap-6">
-        <div className="flex flex-col gap-2">
+      <div className="flex flex-col gap-6">
+        <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <div className="w-12 h-12 bg-accent/10 rounded-2xl grid place-items-center">
-              <MapPin className="w-6 h-6 text-accent" />
-            </div>
-            <div>
-              <h2 className="text-3xl font-black tracking-tighter text-text-main">Cerca de ti</h2>
-              <p className="text-sm text-text-secondary font-medium italic">Supermercados y tiendas encontrados por GPS</p>
+            <button 
+              onClick={onOpenMenu}
+              className="lg:hidden p-2.5 bg-white border border-border rounded-xl shadow-sm active:scale-95 transition-all"
+            >
+              <Menu className="w-5 h-5 text-text-main" />
+            </button>
+            <div className="flex flex-col gap-1">
+              <div className="flex items-center gap-2">
+                <div className="w-10 h-10 bg-accent/10 rounded-xl grid place-items-center sm:w-12 sm:h-12">
+                  <MapPin className="w-5 h-5 text-accent sm:w-6 sm:h-6" />
+                </div>
+                <div>
+                  <h2 className="text-2xl sm:text-3xl font-black tracking-tighter text-text-main leading-tight">Cerca de ti</h2>
+                  <p className="text-[10px] sm:text-xs text-text-secondary font-medium italic">Encuentra suministros al instante</p>
+                </div>
+              </div>
             </div>
           </div>
         </div>
 
-        {/* Filters */}
-        <div className="flex flex-wrap gap-2">
+        {/* Uber Style Filters */}
+        <div className="flex overflow-x-auto pb-2 gap-2 no-scrollbar -mx-4 px-4 md:mx-0 md:px-0">
+          <button
+             onClick={() => { setSelectedCategory('all'); setSelectedBrand(null); }}
+             className={cn(
+               "flex-none px-5 py-2.5 rounded-full text-sm font-bold transition-all flex items-center gap-2",
+               selectedCategory === 'all' && !showOnlyOpen ? "bg-black text-white" : "bg-gray-100 text-black hover:bg-gray-200"
+             )}
+          >
+            <span>🛍️</span> Todos
+          </button>
+
           <button 
             onClick={() => setShowOnlyOpen(!showOnlyOpen)}
             className={cn(
-              "px-4 py-2 rounded-full text-xs font-black uppercase tracking-widest transition-all border",
-              showOnlyOpen ? "bg-green-500 text-white border-green-500 shadow-lg shadow-green-500/20" : "bg-white text-text-secondary border-border hover:border-green-500"
+              "flex-none px-5 py-2.5 rounded-full text-sm font-bold transition-all flex items-center gap-2 border-2",
+              showOnlyOpen ? "bg-green-600 text-white border-green-600" : "bg-gray-100 text-black border-transparent hover:bg-gray-200"
             )}
           >
-            Abierto ahora
+            <span>🕒</span> Abierto
           </button>
-          <div className="h-8 w-[1px] bg-border mx-1 self-center" />
-          {brands.map(brand => (
+
+          <div className="flex-none w-[1px] bg-gray-200 mx-1" />
+
+          <button
+             onClick={() => { setSelectedCategory('big_chain'); setSelectedBrand(null); }}
+             className={cn(
+               "flex-none px-5 py-2.5 rounded-full text-sm font-bold transition-all flex items-center gap-2",
+               selectedCategory === 'big_chain' && !selectedBrand ? "bg-black text-white" : "bg-gray-100 text-black hover:bg-gray-200"
+             )}
+          >
+            <span>🛒</span> Súper
+          </button>
+
+          <button
+             onClick={() => { setSelectedCategory('others'); setSelectedBrand(null); }}
+             className={cn(
+               "flex-none px-5 py-2.5 rounded-full text-sm font-bold transition-all flex items-center gap-2",
+               selectedCategory === 'others' ? "bg-black text-white" : "bg-gray-100 text-black hover:bg-gray-200"
+             )}
+          >
+            <span>🏠</span> Otros
+          </button>
+
+          <div className="flex-none w-[1px] bg-gray-200 mx-1" />
+
+          {BIG_CHAINS.map(brand => (
             <button
                key={brand}
-               onClick={() => setSelectedBrand(selectedBrand === brand ? null : brand)}
+               onClick={() => { 
+                 setSelectedCategory('big_chain'); 
+                 setSelectedBrand(selectedBrand === brand ? null : brand); 
+               }}
                className={cn(
-                 "px-4 py-2 rounded-full text-xs font-black uppercase tracking-widest transition-all border",
-                 selectedBrand === brand ? "bg-accent text-white border-accent shadow-lg shadow-accent/20" : "bg-white text-text-secondary border-border hover:border-accent"
+                 "flex-none px-5 py-2.5 rounded-full text-sm font-bold transition-all flex items-center gap-2",
+                 selectedBrand === brand ? "bg-accent text-white" : "bg-gray-100 text-black hover:bg-gray-200"
                )}
             >
               {brand}
@@ -2252,65 +2311,57 @@ function StoresView() {
           <button onClick={() => { setSelectedBrand(null); setShowOnlyOpen(false); }} className="mt-4 text-accent font-black text-xs uppercase tracking-widest underline decoration-2 underline-offset-4">Limpiar todo</button>
         </div>
       ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
           {filteredStores.map((store, i) => (
             <motion.a
                key={store.id}
-               initial={{ opacity: 0, scale: 0.95 }}
-               animate={{ opacity: 1, scale: 1 }}
-               transition={{ delay: i * 0.03 }}
+               initial={{ opacity: 0, y: 10 }}
+               animate={{ opacity: 1, y: 0 }}
+               transition={{ delay: i * 0.02 }}
                href={`https://www.google.com/maps/dir/?api=1&destination=${store.lat},${store.lon}`}
                target="_blank"
                rel="noopener noreferrer"
-               className="bg-white border border-border p-6 rounded-[2rem] group hover:border-accent hover:shadow-2xl hover:shadow-accent/10 transition-all active:scale-[0.98] flex flex-col gap-5 text-left shadow-soft relative overflow-hidden"
+               className="bg-white border border-border p-4 rounded-2xl group hover:border-black transition-all active:scale-[0.98] flex flex-col gap-4 text-left shadow-soft relative overflow-hidden"
             >
-              <div className="absolute top-0 right-0 w-32 h-32 bg-accent/5 rounded-bl-[4rem] group-hover:scale-110 transition-transform -z-0" />
-              
-              <div className="flex items-start justify-between relative z-10">
-                <div className="w-14 h-14 bg-gray-50 border border-border rounded-2xl flex items-center justify-center text-3xl shadow-sm group-hover:bg-white transition-colors">
-                  {store.icon}
-                </div>
-                <div className="flex flex-col items-end gap-1">
-                  <div className="px-3 py-1 bg-accent/10 text-accent rounded-full text-[10px] font-black uppercase tracking-wider">
-                    {store.distance < 1 ? `${(store.distance * 1000).toFixed(0)}m` : `${store.distance.toFixed(1)}km`}
+              <div className="flex items-start justify-between gap-3">
+                <div className="flex items-center gap-3 min-w-0">
+                  <div className="w-12 h-12 bg-gray-50 border border-border rounded-xl flex-none flex items-center justify-center text-2xl group-hover:bg-white transition-colors">
+                    {store.icon}
                   </div>
+                  <div className="min-w-0">
+                    <h3 className="font-bold text-base text-text-main group-hover:text-black transition-colors tracking-tight truncate">
+                      {store.name}
+                    </h3>
+                    <div className="flex items-center gap-3 mt-1">
+                      <div className="flex items-center gap-1 text-text-secondary">
+                        <Car className="w-3 h-3 text-blue-500" />
+                        <span className="text-[10px] font-bold">{store.carTime} min</span>
+                      </div>
+                      <div className="flex items-center gap-1 text-text-secondary">
+                        <Footprints className="w-3 h-3 text-orange-500" />
+                        <span className="text-[10px] font-bold">{store.walkTime} min</span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+                <div className="px-2 py-0.5 bg-gray-100 rounded-md text-[10px] font-bold text-gray-600 flex-none">
+                  {store.distance < 1 ? `${(store.distance * 1000).toFixed(0)}m` : `${store.distance.toFixed(1)}km`}
                 </div>
               </div>
 
-              <div className="relative z-10">
-                <h3 className="font-black text-xl text-text-main group-hover:text-accent transition-colors tracking-tight line-clamp-1">
-                  {store.name}
-                </h3>
-                
-                <div className="flex items-center gap-3 mt-3">
-                  <div className="flex items-center gap-1.5 text-text-secondary">
-                    <Car className="w-3.5 h-3.5 text-blue-500" />
-                    <span className="text-xs font-bold">{store.carTime} min</span>
-                  </div>
-                  <div className="w-1 h-1 rounded-full bg-border" />
-                  <div className="flex items-center gap-1.5 text-text-secondary">
-                    <Footprints className="w-3.5 h-3.5 text-orange-500" />
-                    <span className="text-xs font-bold">{store.walkTime} min</span>
-                  </div>
+              <div className="mt-auto pt-3 border-t border-gray-50 flex items-center justify-between">
+                <div className="flex items-center gap-1.5">
+                  <div className={cn("w-2 h-2 rounded-full", store.isOpen ? "bg-green-500" : "bg-red-500")} />
+                  <span className="text-[9px] font-black text-gray-400 uppercase tracking-wider">
+                    {store.isOpen ? 'Abierto' : 'Cerrado'}
+                  </span>
                 </div>
-
-                <div className="flex items-center gap-2 mt-4 text-text-secondary bg-gray-50 p-2 rounded-xl border border-border/50">
-                  <Clock className="w-3.5 h-3.5 text-accent" />
-                  <span className="text-[10px] font-bold truncate">
+                
+                <div className="flex items-center gap-2">
+                  <span className="text-[9px] font-bold text-gray-400 group-hover:text-gray-600 transition-colors">
                     {store.openingHours}
                   </span>
-                </div>
-              </div>
-
-              <div className="pt-4 border-t border-border/50 mt-auto relative z-10 flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <div className={cn("w-2.5 h-2.5 rounded-full", store.isOpen ? "bg-green-500 animate-pulse" : "bg-red-500")} />
-                  <span className="text-[10px] font-black text-gray-400 uppercase tracking-widest">
-                    {store.isOpen ? 'Abierto Ahora' : 'Cerrado Temporalmente'}
-                  </span>
-                </div>
-                <div className="p-2 bg-accent/5 rounded-lg group-hover:bg-accent group-hover:text-white transition-colors">
-                  <ChevronRight className="w-4 h-4" />
+                  <ChevronRight className="w-3.5 h-3.5 text-gray-300 group-hover:text-black transition-colors" />
                 </div>
               </div>
             </motion.a>
