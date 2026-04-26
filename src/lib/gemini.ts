@@ -100,7 +100,17 @@ export interface ParsedVoiceItem {
 export async function parseVoiceInput(text: string): Promise<ParsedVoiceItem[]> {
   console.log(`[IA] Procesando dictado: "${text}"`);
   
-  const fallbackSplit = (t: string) => t.split(/[,;\n]|\sy\s|\se\s/).map(item => ({ name: item.trim() })).filter(i => i.name.length > 1);
+  const fallbackSplit = (t: string) => {
+    // Si no hay comas ni "y", intentamos dividir por espacios si hay múltiples palabras capitalizadas o patrones de lista
+    // Pero por simplicidad, primero probamos con separadores comunes
+    const items = t.split(/[,;\n]|\sy\s|\se\s|\.|\s-\s/).map(item => item.trim()).filter(item => item.length > 1);
+    if (items.length === 1 && items[0].includes(' ')) {
+      // Si solo hay un item pero tiene espacios, intentamos ver si parece una lista sin separadores
+      // Por ahora mantenemos el comportamento conservador pero permitimos división por " " si parece claro
+      // En fallback es difícil, así que mejor enviamos a la IA.
+    }
+    return items.map(name => ({ name: name.charAt(0).toUpperCase() + name.slice(1) }));
+  };
 
   if (!process.env.GEMINI_API_KEY) {
     return fallbackSplit(text);
@@ -109,26 +119,25 @@ export async function parseVoiceInput(text: string): Promise<ParsedVoiceItem[]> 
   try {
     const response = await ai.models.generateContent({
       model: "gemini-3-flash-preview",
-      contents: `Extrae todos los productos de este dictado de voz para una lista de compras: "${text}".
+      contents: `Tu tarea es tomar un texto dictado por voz y convertirlo en una LISTA de productos individuales para el supermercado.
       
-      IMPORTANTE:
-      - Identifica cada producto por separado incluso si no hay comas o conectores (ej: "pan leche huevos" -> 3 productos).
-      - Si el usuario dice "un x", "dos y", etc., extrae la cantidad.
-      - Limpia el nombre del producto (ej: "comprar leche" -> "Leche").
-      - Devuelve un array JSON de objetos.
+      TEXTO: "${text}"
       
-      Cada objeto debe tener:
-      - name: nombre del producto (en singular, capitalizado, sin excedentes).
-      - quantity: número de unidades (opcional, null si no se especifica).
-      - unit: unidad de medida (l, kg, pack, uds, etc.) (opcional, null si no se especifica).
+      REGLAS CRÍTICAS:
+      1. DIVIDE el texto en productos individuales. Aunque el usuario no use comas ni "y", debes identificar dónde termina un producto y empieza otro.
+         Ejemplo: "carne arroz leche" -> ["Carne", "Arroz", "Leche"]
+      2. Extrae CANTIDAD y UNIDAD si se mencionan (ej: "un kilo de harina" -> {name: "Harina", quantity: 1, unit: "kg"}).
+      3. Limpia el nombre: quita verbos como "comprar", "traer", "necesito".
+      4. Si el usuario dice "varios x", pon quantity null o un número razonable si se deduce.
+      5. Formato de salida: Array JSON de objetos.
       
-      Ejemplo input: "tráeme tres litros de leche dos kilos de arroz panes y una lechuga"
-      Ejemplo output: [
-        {"name": "Leche", "quantity": 3, "unit": "l"}, 
-        {"name": "Arroz", "quantity": 2, "unit": "kg"}, 
-        {"name": "Pan", "quantity": null, "unit": "uds"}, 
-        {"name": "Lechuga", "quantity": 1, "unit": "uds"}
-      ]`,
+      Estructura de objeto:
+      - name: string (Nombre limpio, capitalizado, en singular si aplica)
+      - quantity: number | null
+      - unit: string | null (l, kg, gr, uds, pack, frasco, bolsa)
+      
+      Si el texto es "leche por favor y tres panes grandes", el output debe ser:
+      [{"name": "Leche", "quantity": 1, "unit": "uds"}, {"name": "Pan grande", "quantity": 3, "unit": "uds"}]`,
       config: {
         responseMimeType: "application/json",
         responseSchema: {
@@ -146,9 +155,15 @@ export async function parseVoiceInput(text: string): Promise<ParsedVoiceItem[]> 
       }
     });
 
-    return JSON.parse(response.text || '[]') as ParsedVoiceItem[];
+    const parsed = JSON.parse(response.text || '[]') as ParsedVoiceItem[];
+    // Asegurarse de que cada objeto cumpla con la interfaz (a veces la IA puede omitir campos si no son required)
+    return parsed.map(item => ({
+      name: item.name,
+      quantity: item.quantity ?? null,
+      unit: item.unit ?? null
+    }));
   } catch (error) {
     console.error("Error parsing voice input:", error);
-    return text.split(/[,,y\n]+/).map(item => ({ name: item.trim() })).filter(i => i.name.length > 0);
+    return fallbackSplit(text);
   }
 }

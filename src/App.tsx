@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { 
   onAuthStateChanged, 
   signInWithPopup, 
@@ -46,6 +46,7 @@ import {
   Mic,
   History,
   AlertCircle,
+  Loader2,
   ChevronRight,
   MoreVertical,
   Star,
@@ -65,6 +66,7 @@ import {
   ArrowRightLeft,
   FolderPlus,
   MapPin,
+  Navigation,
   Compass,
   AlertTriangle,
   ExternalLink,
@@ -330,24 +332,29 @@ function VoiceInputButton({ onItemsFound, onStatusChange }: {
   onStatusChange?: (msg: string, type: 'info' | 'error' | 'success') => void 
 }) {
   const [isListening, setIsListening] = useState(false);
+  const [isProcessing, setIsProcessing] = useState(false);
+  const recognitionRef = useRef<any>(null);
+
+  const stopListening = () => {
+    if (recognitionRef.current) {
+      recognitionRef.current.stop();
+      setIsListening(false);
+    }
+  };
 
   const startListening = () => {
     const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
     if (!SpeechRecognition) {
       if (onStatusChange) onStatusChange("Tu navegador no soporta dictado de voz.", 'error');
-      else alert("Tu navegador no soporta dictado de voz. Por favor usa Chrome o Safari.");
       return;
-    }
-
-    if (window.self !== window.top) {
-      console.warn("[Dictado] Detectado entorno iframe.");
     }
 
     try {
       const recognition = new SpeechRecognition();
+      recognitionRef.current = recognition;
       recognition.lang = 'es-CL';
       recognition.continuous = false;
-      recognition.interimResults = true; // Activar resultados parciales para mejor UX
+      recognition.interimResults = true;
 
       recognition.onstart = () => {
         setIsListening(true);
@@ -360,6 +367,7 @@ function VoiceInputButton({ onItemsFound, onStatusChange }: {
       
       recognition.onerror = (event: any) => {
         setIsListening(false);
+        setIsProcessing(false);
         let errorMsg = "Error al escuchar.";
         if (event.error === 'not-allowed') errorMsg = "Permiso de micrófono denegado.";
         if (event.error === 'network') errorMsg = "Error de red en dictado.";
@@ -370,20 +378,30 @@ function VoiceInputButton({ onItemsFound, onStatusChange }: {
       };
 
       recognition.onresult = async (event: any) => {
-        const isFinal = event.results[event.results.length - 1].isFinal;
-        if (!isFinal) return;
+        // Recolectamos el transcript final
+        let transcript = '';
+        for (let i = event.resultIndex; i < event.results.length; ++i) {
+          if (event.results[i].isFinal) {
+            transcript += event.results[i][0].transcript;
+          }
+        }
 
-        const transcript = event.results[0][0].transcript;
-        if (onStatusChange) onStatusChange(`Procesando: "${transcript}"`, 'info');
+        if (!transcript) return;
+
+        setIsListening(false);
+        setIsProcessing(true);
+        if (onStatusChange) onStatusChange(`Procesando dictado...`, 'info');
 
         try {
           const parsed = await parseVoiceInput(transcript);
+          setIsProcessing(false);
           if (parsed.length > 0) {
             onItemsFound(parsed);
           } else {
             if (onStatusChange) onStatusChange("No se identificaron productos.", 'info');
           }
         } catch (error) {
+          setIsProcessing(false);
           if (onStatusChange) onStatusChange("Error al procesar dictado.", 'error');
         }
       };
@@ -392,25 +410,54 @@ function VoiceInputButton({ onItemsFound, onStatusChange }: {
     } catch (err) {
       console.error("[Dictado] Fallo crítico:", err);
       setIsListening(false);
+      setIsProcessing(false);
       if (onStatusChange) onStatusChange("Error al iniciar micrófono.", 'error');
     }
   };
 
+  const holdTimerRef = useRef<any>(null);
+  const isHoldRef = useRef(false);
+
   return (
     <button
       type="button"
-      onClick={(e) => {
+      onPointerDown={(e) => {
         e.preventDefault();
-        if (isListening) return;
-        startListening();
+        if (isProcessing) return;
+        isHoldRef.current = false;
+        holdTimerRef.current = setTimeout(() => {
+          isHoldRef.current = true;
+          if (!isListening) startListening();
+        }, 200); // threshold to count as "hold"
+      }}
+      onPointerUp={(e) => {
+        e.preventDefault();
+        if (holdTimerRef.current) clearTimeout(holdTimerRef.current);
+        if (isHoldRef.current && isListening) {
+          stopListening();
+        } else if (!isHoldRef.current && !isProcessing) {
+          // It was a simple tap
+          if (isListening) stopListening();
+          else startListening();
+        }
+      }}
+      onPointerLeave={(e) => {
+        if (holdTimerRef.current) clearTimeout(holdTimerRef.current);
+        if (isHoldRef.current && isListening) stopListening();
       }}
       className={cn(
-        "p-2 rounded-xl transition-all active:scale-95 flex-none relative",
-        isListening ? "bg-red-500 text-white shadow-lg shadow-red-500/20" : "bg-gray-100 text-text-secondary hover:bg-black hover:text-white"
+        "p-2 rounded-xl transition-all active:scale-95 flex-none relative touch-none",
+        isListening ? "bg-red-500 text-white shadow-lg shadow-red-500/20" : 
+        isProcessing ? "bg-blue-100 text-blue-600 animate-pulse" :
+        "bg-gray-100 text-text-secondary hover:bg-black hover:text-white"
       )}
-      title="Dictar productos (Ej: necesito leche y dos panes)"
+      title={isListening ? "Soltar para detener" : "Mantener para dictar (Ej: carne arroz leche)"}
     >
-      <Mic className={cn("w-4 h-4", isListening && "animate-bounce")} />
+      {isProcessing ? (
+        <Loader2 className="w-4 h-4 animate-spin" />
+      ) : (
+        <Mic className={cn("w-4 h-4", isListening && "animate-bounce")} />
+      )}
       {isListening && (
         <span className="absolute -top-1 -right-1 flex h-2 w-2">
           <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75"></span>
@@ -2747,15 +2794,12 @@ function StoresView({ onOpenMenu, addNotification }: { onOpenMenu: () => void, a
       ) : (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
           {filteredStores.map((store, i) => (
-            <motion.a
+            <motion.div
                key={store.id}
                initial={{ opacity: 0, y: 10 }}
                animate={{ opacity: 1, y: 0 }}
                transition={{ delay: i * 0.02 }}
-               href={`https://www.google.com/maps/dir/?api=1&destination=${store.lat},${store.lon}`}
-               target="_blank"
-               rel="noopener noreferrer"
-               className="bg-white border border-border p-4 rounded-2xl group hover:border-black transition-all active:scale-[0.98] flex flex-col gap-4 text-left shadow-soft relative overflow-hidden"
+               className="bg-white border border-border p-4 rounded-2xl group hover:border-black/20 transition-all flex flex-col gap-4 text-left shadow-soft relative overflow-hidden"
             >
               <div className="flex items-start justify-between gap-3">
                 <div className="flex items-center gap-3 min-w-0">
@@ -2783,6 +2827,27 @@ function StoresView({ onOpenMenu, addNotification }: { onOpenMenu: () => void, a
                 </div>
               </div>
 
+              <div className="grid grid-cols-2 gap-2 mt-2">
+                <a 
+                  href={`https://www.google.com/maps/dir/?api=1&destination=${store.lat},${store.lon}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex items-center justify-center gap-2 py-2.5 bg-gray-50 hover:bg-black hover:text-white border border-gray-100 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all active:scale-95"
+                >
+                  <MapPin className="w-3 h-3" />
+                  Google
+                </a>
+                <a 
+                  href={`https://waze.com/ul?ll=${store.lat},${store.lon}&navigate=yes`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex items-center justify-center gap-2 py-2.5 bg-white hover:bg-[#05C8F0] hover:text-white border border-[#05C8F0]/30 text-[#05C8F0] rounded-xl text-[10px] font-black uppercase tracking-widest transition-all active:scale-95"
+                >
+                  <Navigation className="w-3 h-3" />
+                  Waze
+                </a>
+              </div>
+
               <div className="mt-auto pt-3 border-t border-gray-50 flex items-center justify-between">
                 <div className="flex items-center gap-1.5">
                   <div className={cn("w-2 h-2 rounded-full", store.isOpen ? "bg-green-500" : "bg-red-500")} />
@@ -2798,7 +2863,7 @@ function StoresView({ onOpenMenu, addNotification }: { onOpenMenu: () => void, a
                   <ChevronRight className="w-3.5 h-3.5 text-gray-300 group-hover:text-black transition-colors" />
                 </div>
               </div>
-            </motion.a>
+            </motion.div>
           ))}
         </div>
       )}
