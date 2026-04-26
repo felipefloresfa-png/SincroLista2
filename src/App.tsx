@@ -2355,8 +2355,8 @@ function StoresView({ onOpenMenu }: { onOpenMenu: () => void }) {
 
   const fetchStores = async (latitude: number, longitude: number) => {
     try {
+      addNotification("Conexión con satélites establecida. Buscando locales...", 'info');
       const query = `[out:json];nwr["shop"~"supermarket|convenience|grocery"](around:5000,${latitude},${longitude});out center;`;
-      // Intentar con una URL de respaldo si la principal falla
       const endpoints = [
         'https://overpass-api.de/api/interpreter',
         'https://overpass.kumi.systems/api/interpreter',
@@ -2368,7 +2368,10 @@ function StoresView({ onOpenMenu }: { onOpenMenu: () => void }) {
 
       for (const url of endpoints) {
         try {
-          response = await fetch(`${url}?data=${encodeURIComponent(query)}`);
+          const controller = new AbortController();
+          const timeoutId = setTimeout(() => controller.abort(), 8000);
+          response = await fetch(`${url}?data=${encodeURIComponent(query)}`, { signal: controller.signal });
+          clearTimeout(timeoutId);
           if (response.ok) break;
         } catch (e) {
           lastError = e;
@@ -2377,39 +2380,51 @@ function StoresView({ onOpenMenu }: { onOpenMenu: () => void }) {
       }
 
       if (!response || !response.ok) {
-        throw lastError || new Error("Todos los mirrors de mapas fallaron.");
+        throw lastError || new Error("Los servidores de mapas están saturados.");
       }
 
       const data = await response.json();
       
+      if (!data.elements || data.elements.length === 0) {
+        setAllStores([]);
+        setLoading(false);
+        setError("No encontramos supermercados cerca de tu ubicación actual (5km).");
+        return;
+      }
+
       const processedStores = data.elements.map((el: any) => {
-        const lat = el.lat || el.center?.lat;
-        const lon = el.lon || el.center?.lon;
-        
-        if (!lat || !lon) return null;
+        try {
+          const lat = el.lat || el.center?.lat;
+          const lon = el.lon || el.center?.lon;
+          
+          if (!lat || !lon) return null;
 
-        const dist = calculateDistance(latitude, longitude, lat, lon);
-        const hours = el.tags.opening_hours;
-        const isOpen = hours ? checkIsOpen(hours) : true;
-        const displayHours = hours || "08:30-21:00";
-        const name = el.tags.name || el.tags.brand || el.tags.operator || "Almacén";
-        const brand = el.tags.brand || el.tags.operator || "";
-        const catInfo = getStoreCategory(name, brand);
+          const dist = calculateDistance(latitude, longitude, lat, lon);
+          const tags = el.tags || {};
+          const hours = tags.opening_hours;
+          const isOpen = hours ? checkIsOpen(hours) : true;
+          const displayHours = hours || "08:30-21:00";
+          const name = tags.name || tags.brand || tags.operator || "Almacén";
+          const brand = tags.brand || tags.operator || "";
+          const catInfo = getStoreCategory(name, brand);
 
-        return {
-          id: el.id,
-          name: name,
-          brandName: catInfo.brandName,
-          isBigChain: catInfo.category === 'big_chain',
-          lat: lat,
-          lon: lon,
-          distance: dist,
-          openingHours: displayHours,
-          carTime: getTravelTime(dist, 'car'),
-          walkTime: getTravelTime(dist, 'walking'),
-          icon: getStoreIcon(name),
-          isOpen
-        };
+          return {
+            id: el.id,
+            name: name,
+            brandName: catInfo.brandName,
+            isBigChain: catInfo.category === 'big_chain',
+            lat: lat,
+            lon: lon,
+            distance: dist,
+            openingHours: displayHours,
+            carTime: getTravelTime(dist, 'car'),
+            walkTime: getTravelTime(dist, 'walking'),
+            icon: getStoreIcon(name),
+            isOpen
+          };
+        } catch (e) {
+          return null;
+        }
       }).filter(Boolean).sort((a: any, b: any) => a.distance - b.distance);
 
       setAllStores(processedStores.slice(0, 50));
@@ -2417,7 +2432,7 @@ function StoresView({ onOpenMenu }: { onOpenMenu: () => void }) {
       setError(null);
     } catch (err) {
       console.error("Error fetching stores:", err);
-      setError("Error de Red: El servicio de mapas no responde. Revisa tu conexión o intenta más tarde.");
+      setError("Error de Red: El servicio de mapas no responde. Revisa tu internet o intenta de nuevo.");
       setLoading(false);
     }
   };
@@ -2426,23 +2441,32 @@ function StoresView({ onOpenMenu }: { onOpenMenu: () => void }) {
     setLoading(true);
     setError(null);
     setAllStores([]);
+    
+    // Timeout global para evitar carga infinita
+    const globalTimeout = setTimeout(() => {
+      if (loading) {
+        setError("La búsqueda de GPS está tardando demasiado. Prueba moviéndote o verifica los permisos.");
+        setLoading(false);
+      }
+    }, 30000);
 
     if (!navigator.geolocation) {
       setError("Tu navegador no soporta geolocalización");
       setLoading(false);
+      clearTimeout(globalTimeout);
       return;
     }
 
-    // Intentar primero con alta precisión, si falla reintentar con baja
     const tryGetPosition = (highAccuracy: boolean) => {
       const options = {
         enableHighAccuracy: highAccuracy,
-        timeout: highAccuracy ? 10000 : 15000, 
-        maximumAge: highAccuracy ? 0 : 60000
+        timeout: 10000, 
+        maximumAge: highAccuracy ? 0 : 300000 // Aumentamos age para baja precisión
       };
 
       navigator.geolocation.getCurrentPosition(
         (pos) => {
+          clearTimeout(globalTimeout);
           const { latitude, longitude } = pos.coords;
           setCoords({ latitude, longitude });
           fetchStores(latitude, longitude);
@@ -2457,10 +2481,11 @@ function StoresView({ onOpenMenu }: { onOpenMenu: () => void }) {
             return;
           }
 
+          clearTimeout(globalTimeout);
           let msg = "No pudimos obtener tu ubicación.";
           if (err.code === 1) msg = "Acceso Denegado: Permite el uso de tu ubicación en los ajustes del navegador.";
-          if (err.code === 2) msg = "Ubicación No Disponible: El GPS no tiene señal. Prueba cerca de una ventana.";
-          if (err.code === 3) msg = "Tiempo Agotado: La señal GPS es muy débil. Reintenta en un momento.";
+          if (err.code === 2) msg = "Ubicación No Disponible: El GPS no tiene señal. Prueba cerca de una ventana o en la terraza.";
+          if (err.code === 3) msg = "Tiempo Agotado: La señal GPS es muy débil. Asegúrate de tener el GPS activado.";
           
           setError(msg);
           setLoading(false);
@@ -2488,6 +2513,16 @@ function StoresView({ onOpenMenu }: { onOpenMenu: () => void }) {
         <p className="text-[10px] text-gray-400 max-w-[200px] mx-auto leading-tight mt-4">
           Si este proceso demora demasiado, asegúrate de tener el GPS activado y haber concedido permisos.
         </p>
+        <button 
+          onClick={() => {
+            setAllStores([]);
+            setLoading(false);
+            setError("Búsqueda omitida. Puedes usar la lista sin ubicación o intentar de nuevo más tarde.");
+          }}
+          className="mt-6 px-4 py-2 text-[10px] font-black uppercase tracking-widest text-accent border border-accent/20 rounded-xl hover:bg-accent/5 transition-all"
+        >
+          Omitir y continuar sin GPS
+        </button>
       </div>
     </div>
   );
