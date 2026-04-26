@@ -72,7 +72,8 @@ import {
   Footprints,
   Clock,
   Filter,
-  Info
+  Info,
+  CheckCircle2
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { analyzeItem, getSmartRecommendations, parseVoiceInput, ItemInfo, ParsedVoiceItem } from './lib/gemini';
@@ -285,60 +286,113 @@ function CopyCodeComponent({ code }: { code: string }) {
   );
 }
 
-function VoiceInputButton({ onItemsFound }: { onItemsFound: (items: ParsedVoiceItem[]) => void }) {
+interface Notification {
+  id: string;
+  message: string;
+  type: 'success' | 'error' | 'info';
+}
+
+function ToastContainer({ notifications, onDismiss }: { notifications: Notification[], onDismiss: (id: string) => void }) {
+  return (
+    <div className="fixed bottom-24 left-1/2 -translate-x-1/2 z-[100] w-full max-w-[320px] px-4 space-y-2 pointer-events-none">
+      <AnimatePresence>
+        {notifications.map((n) => (
+          <motion.div
+            key={n.id}
+            initial={{ opacity: 0, y: 20, scale: 0.95 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, scale: 0.9, transition: { duration: 0.2 } }}
+            className={cn(
+              "p-3 rounded-2xl shadow-xl flex items-center gap-3 border pointer-events-auto",
+              n.type === 'success' ? "bg-white border-green-100" : 
+              n.type === 'error' ? "bg-white border-red-100" : "bg-white border-blue-100"
+            )}
+            onClick={() => onDismiss(n.id)}
+          >
+            <div className={cn(
+              "w-8 h-8 rounded-full flex items-center justify-center flex-none",
+              n.type === 'success' ? "bg-green-50 text-green-600" : 
+              n.type === 'error' ? "bg-red-50 text-red-600" : "bg-blue-50 text-blue-600"
+            )}>
+              {n.type === 'success' ? <CheckCircle2 className="w-4 h-4" /> : 
+               n.type === 'error' ? <AlertCircle className="w-4 h-4" /> : <Info className="w-4 h-4" />}
+            </div>
+            <p className="text-xs font-bold text-gray-800 leading-tight">{n.message}</p>
+          </motion.div>
+        ))}
+      </AnimatePresence>
+    </div>
+  );
+}
+
+function VoiceInputButton({ onItemsFound, onStatusChange }: { 
+  onItemsFound: (items: ParsedVoiceItem[]) => void,
+  onStatusChange?: (msg: string, type: 'info' | 'error' | 'success') => void 
+}) {
   const [isListening, setIsListening] = useState(false);
 
   const startListening = () => {
     const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
     if (!SpeechRecognition) {
-      alert("Tu navegador no soporta dictado de voz. Por favor usa Chrome o Safari.");
+      if (onStatusChange) onStatusChange("Tu navegador no soporta dictado de voz.", 'error');
+      else alert("Tu navegador no soporta dictado de voz. Por favor usa Chrome o Safari.");
       return;
     }
 
-    // Comprobar si estamos en un iframe (el preview de AI Studio es un iframe)
     if (window.self !== window.top) {
-      console.warn("[Dictado] Detectado entorno iframe. Si el micrófono no funciona, abre la app en una pestaña nueva.");
+      console.warn("[Dictado] Detectado entorno iframe.");
     }
 
     try {
       const recognition = new SpeechRecognition();
       recognition.lang = 'es-CL';
       recognition.continuous = false;
-      recognition.interimResults = false;
+      recognition.interimResults = true; // Activar resultados parciales para mejor UX
 
       recognition.onstart = () => {
-        console.log("[Dictado] Escuchando...");
         setIsListening(true);
+        if (onStatusChange) onStatusChange("Escuchando...", 'info');
       };
 
       recognition.onend = () => {
-        console.log("[Dictado] Fin de escucha.");
         setIsListening(false);
       };
       
       recognition.onerror = (event: any) => {
-        console.error("[Dictado] Error de reconocimiento:", event.error);
         setIsListening(false);
-        if (event.error === 'not-allowed') {
-          alert("Permiso de micrófono denegado. Asegúrate de dar permisos en el navegador y considera abrir la app en una pestaña nueva.");
-        }
+        let errorMsg = "Error al escuchar.";
+        if (event.error === 'not-allowed') errorMsg = "Permiso de micrófono denegado.";
+        if (event.error === 'network') errorMsg = "Error de red en dictado.";
+        if (event.error === 'no-speech') errorMsg = "No se detectó voz.";
+        
+        if (onStatusChange) onStatusChange(errorMsg, 'error');
+        console.error("[Dictado] Error:", event.error);
       };
 
       recognition.onresult = async (event: any) => {
+        const isFinal = event.results[event.results.length - 1].isFinal;
+        if (!isFinal) return;
+
         const transcript = event.results[0][0].transcript;
-        console.log("[Dictado] Texto reconocido:", transcript);
+        if (onStatusChange) onStatusChange(`Procesando: "${transcript}"`, 'info');
+
         try {
           const parsed = await parseVoiceInput(transcript);
-          onItemsFound(parsed);
+          if (parsed.length > 0) {
+            onItemsFound(parsed);
+          } else {
+            if (onStatusChange) onStatusChange("No se identificaron productos.", 'info');
+          }
         } catch (error) {
-          console.error("[IA] Error procesando texto:", error);
+          if (onStatusChange) onStatusChange("Error al procesar dictado.", 'error');
         }
       };
 
       recognition.start();
     } catch (err) {
-      console.error("[Dictado] Error al iniciar reconocimiento:", err);
+      console.error("[Dictado] Fallo crítico:", err);
       setIsListening(false);
+      if (onStatusChange) onStatusChange("Error al iniciar micrófono.", 'error');
     }
   };
 
@@ -347,15 +401,22 @@ function VoiceInputButton({ onItemsFound }: { onItemsFound: (items: ParsedVoiceI
       type="button"
       onClick={(e) => {
         e.preventDefault();
+        if (isListening) return;
         startListening();
       }}
       className={cn(
-        "p-2 rounded-xl transition-all active:scale-95 flex-none",
-        isListening ? "bg-red-500 text-white animate-pulse shadow-lg shadow-red-500/20" : "bg-gray-100 text-text-secondary hover:bg-black hover:text-white"
+        "p-2 rounded-xl transition-all active:scale-95 flex-none relative",
+        isListening ? "bg-red-500 text-white shadow-lg shadow-red-500/20" : "bg-gray-100 text-text-secondary hover:bg-black hover:text-white"
       )}
       title="Dictar productos (Ej: necesito leche y dos panes)"
     >
-      <Mic className={cn("w-4 h-4", isListening && "scale-110")} />
+      <Mic className={cn("w-4 h-4", isListening && "animate-bounce")} />
+      {isListening && (
+        <span className="absolute -top-1 -right-1 flex h-2 w-2">
+          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75"></span>
+          <span className="relative inline-flex rounded-full h-2 w-2 bg-red-500"></span>
+        </span>
+      )}
     </button>
   );
 }
@@ -385,6 +446,15 @@ export default function App() {
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [loading, setLoading] = useState(false); // Used for other global loading states if needed
   const [isScrolled, setIsScrolled] = useState(false);
+  const [notifications, setNotifications] = useState<Notification[]>([]);
+  
+  const addNotification = useCallback((message: string, type: 'success' | 'error' | 'info' = 'success') => {
+    const id = Math.random().toString(36).substring(7);
+    setNotifications(prev => [...prev, { id, message, type }]);
+    setTimeout(() => {
+      setNotifications(prev => prev.filter(n => n.id !== id));
+    }, 4000);
+  }, []);
 
   useEffect(() => {
     const handleScroll = () => {
@@ -797,17 +867,19 @@ export default function App() {
 
   const handleVoiceItems = async (parsedItems: ParsedVoiceItem[]) => {
     addLog(`Dictado: Procesando ${parsedItems.length} productos...`);
+    addNotification(`Dictado: Procesando ${parsedItems.length} productos...`, 'info');
     for (const item of parsedItems) {
       // Usamos qty especificado o 1 por defecto
       const qty = item.quantity?.toString() || '1';
       // Si el item viene con unidad (ej: "3 litros de leche"), concatenamos al nombre o usamos campo unitario
       const finalName = item.unit ? `${item.name} (${item.unit})` : item.name;
-      await addItem(finalName, qty);
+      await addItem(finalName, qty, undefined, true);
     }
     addLog("Dictado completado con éxito.");
+    addNotification("¡Productos añadidos con éxito!", 'success');
   };
 
-  const addItem = async (name: string, qty: string = '1', listIdOverride?: string) => {
+  const addItem = async (name: string, qty: string = '1', listIdOverride?: string, silent: boolean = false) => {
     const listToUse = listIdOverride || activeListId;
     if (!name.trim() || !profile) {
       addLog("Error: Esperando perfil...");
@@ -871,6 +943,7 @@ export default function App() {
         
         // GUARDAR EN NUBE DE INMEDIATO
         const docRef = await addDoc(itemsCollection, itemData);
+        if (!silent) addNotification(`${finalName} añadido`, 'success');
         
         // ANALIZAR EN SEGUNDO PLANO SI NO HABÍA CACHÉ
         if (!analysis || analysis.category === 'Otros') {
@@ -1640,7 +1713,7 @@ export default function App() {
                      className="flex-grow min-w-0 bg-transparent border-none outline-none px-2 text-sm font-bold text-text-main placeholder:text-gray-400 placeholder:font-medium"
                      disabled={isAdding}
                    />
-                   <VoiceInputButton onItemsFound={handleVoiceItems} />
+                   <VoiceInputButton onItemsFound={handleVoiceItems} onStatusChange={(msg, type) => addNotification(msg, type)} />
                    <div className="flex items-center bg-gray-100 rounded-xl px-2 py-1.5 border border-border/50 shrink-0 relative transition-colors focus-within:bg-gray-200">
                      <span className="text-[8px] font-black text-gray-400 uppercase mr-1 hidden min-[400px]:inline">Cant</span>
                      <div className="relative flex items-center">
@@ -1973,6 +2046,11 @@ export default function App() {
         .scrollbar-none::-webkit-scrollbar { display: none; }
         .scrollbar-none { -ms-overflow-style: none; scrollbar-width: none; }
       `}</style>
+      
+      <ToastContainer 
+        notifications={notifications} 
+        onDismiss={(id) => setNotifications(prev => prev.filter(n => n.id !== id))} 
+      />
     </div>
   );
 }
@@ -2275,7 +2353,80 @@ function StoresView({ onOpenMenu }: { onOpenMenu: () => void }) {
     setFilteredStores(result);
   }, [selectedCategory, selectedBrand, showOnlyOpen, allStores]);
 
-  useEffect(() => {
+  const fetchStores = async (latitude: number, longitude: number) => {
+    try {
+      const query = `[out:json];nwr["shop"~"supermarket|convenience|grocery"](around:5000,${latitude},${longitude});out center;`;
+      // Intentar con una URL de respaldo si la principal falla
+      const endpoints = [
+        'https://overpass-api.de/api/interpreter',
+        'https://overpass.kumi.systems/api/interpreter',
+        'https://lz4.overpass-api.de/api/interpreter'
+      ];
+      
+      let response: Response | null = null;
+      let lastError: any = null;
+
+      for (const url of endpoints) {
+        try {
+          response = await fetch(`${url}?data=${encodeURIComponent(query)}`);
+          if (response.ok) break;
+        } catch (e) {
+          lastError = e;
+          continue;
+        }
+      }
+
+      if (!response || !response.ok) {
+        throw lastError || new Error("Todos los mirrors de mapas fallaron.");
+      }
+
+      const data = await response.json();
+      
+      const processedStores = data.elements.map((el: any) => {
+        const lat = el.lat || el.center?.lat;
+        const lon = el.lon || el.center?.lon;
+        
+        if (!lat || !lon) return null;
+
+        const dist = calculateDistance(latitude, longitude, lat, lon);
+        const hours = el.tags.opening_hours;
+        const isOpen = hours ? checkIsOpen(hours) : true;
+        const displayHours = hours || "08:30-21:00";
+        const name = el.tags.name || el.tags.brand || el.tags.operator || "Almacén";
+        const brand = el.tags.brand || el.tags.operator || "";
+        const catInfo = getStoreCategory(name, brand);
+
+        return {
+          id: el.id,
+          name: name,
+          brandName: catInfo.brandName,
+          isBigChain: catInfo.category === 'big_chain',
+          lat: lat,
+          lon: lon,
+          distance: dist,
+          openingHours: displayHours,
+          carTime: getTravelTime(dist, 'car'),
+          walkTime: getTravelTime(dist, 'walking'),
+          icon: getStoreIcon(name),
+          isOpen
+        };
+      }).filter(Boolean).sort((a: any, b: any) => a.distance - b.distance);
+
+      setAllStores(processedStores.slice(0, 50));
+      setLoading(false);
+      setError(null);
+    } catch (err) {
+      console.error("Error fetching stores:", err);
+      setError("Error de Red: El servicio de mapas no responde. Revisa tu conexión o intenta más tarde.");
+      setLoading(false);
+    }
+  };
+
+  const initLocation = () => {
+    setLoading(true);
+    setError(null);
+    setAllStores([]);
+
     if (!navigator.geolocation) {
       setError("Tu navegador no soporta geolocalización");
       setLoading(false);
@@ -2283,95 +2434,33 @@ function StoresView({ onOpenMenu }: { onOpenMenu: () => void }) {
     }
 
     const options = {
-      enableHighAccuracy: false, // Menos exigente para evitar fallos en escritorio
-      timeout: 10000,
-      maximumAge: 60000
+      enableHighAccuracy: true, // Cambiamos a true por defecto, si falla el usuario reintenta
+      timeout: 20000,           // Más tiempo para móviles (20s)
+      maximumAge: 0             // Forzar ubicación fresca
     };
 
     navigator.geolocation.getCurrentPosition(
-      async (pos) => {
+      (pos) => {
         const { latitude, longitude } = pos.coords;
         setCoords({ latitude, longitude });
-        
-        try {
-          const query = `[out:json];nwr["shop"~"supermarket|convenience|grocery"](around:5000,${latitude},${longitude});out center;`;
-          // Intentar con una URL de respaldo si la principal falla
-          const endpoints = [
-            'https://overpass-api.de/api/interpreter',
-            'https://overpass.kumi.systems/api/interpreter',
-            'https://lz4.overpass-api.de/api/interpreter'
-          ];
-          
-          let response: Response | null = null;
-          let lastError: any = null;
-
-          for (const url of endpoints) {
-            try {
-              response = await fetch(`${url}?data=${encodeURIComponent(query)}`);
-              if (response.ok) break;
-            } catch (e) {
-              lastError = e;
-              continue;
-            }
-          }
-
-          if (!response || !response.ok) {
-            throw lastError || new Error("Todos los mirrors de mapas fallaron.");
-          }
-
-          const data = await response.json();
-          
-          const processedStores = data.elements.map((el: any) => {
-            const lat = el.lat || el.center?.lat;
-            const lon = el.lon || el.center?.lon;
-            
-            if (!lat || !lon) return null;
-
-            const dist = calculateDistance(latitude, longitude, lat, lon);
-            const hours = el.tags.opening_hours;
-            const isOpen = hours ? checkIsOpen(hours) : true;
-            const displayHours = hours || "08:30-21:00";
-            const name = el.tags.name || el.tags.brand || el.tags.operator || "Almacén";
-            const brand = el.tags.brand || el.tags.operator || "";
-            const catInfo = getStoreCategory(name, brand);
-
-            return {
-              id: el.id,
-              name: name,
-              brandName: catInfo.brandName,
-              isBigChain: catInfo.category === 'big_chain',
-              lat: lat,
-              lon: lon,
-              distance: dist,
-              openingHours: displayHours,
-              carTime: getTravelTime(dist, 'car'),
-              walkTime: getTravelTime(dist, 'walking'),
-              icon: getStoreIcon(name),
-              isOpen
-            };
-          }).filter(Boolean).sort((a: any, b: any) => a.distance - b.distance);
-
-          setAllStores(processedStores.slice(0, 50));
-          setLoading(false);
-          setError(null);
-        } catch (err) {
-          console.error("Error fetching stores:", err);
-          setError("Error de Red: El servicio de mapas no responde. Revisa tu conexión o intenta más tarde.");
-          setLoading(false);
-        }
+        fetchStores(latitude, longitude);
       },
       (err) => {
         console.error("Geolocation error:", err);
         let msg = "Error al obtener ubicación";
         if (err.code === 1) msg = "Acceso Denegado: Permite el uso de tu ubicación en los ajustes del navegador.";
-        if (err.code === 2) msg = "Ubicación No Disponible: El GPS no pudo determinar tu posición regional o de señal.";
-        if (err.code === 3) msg = "Tiempo Agotado: Se tardó demasiado en obtener la ubicación.";
+        if (err.code === 2) msg = "Ubicación No Disponible: El GPS no tiene señal o está desactivado.";
+        if (err.code === 3) msg = "Tiempo Agotado: Se tardó demasiado en obtener la ubicación. Prueba en un lugar con mejor señal.";
         
         setError(msg);
         setLoading(false);
       },
       options
     );
+  };
+
+  useEffect(() => {
+    initLocation();
   }, []);
 
   if (loading) return (
@@ -2382,7 +2471,10 @@ function StoresView({ onOpenMenu }: { onOpenMenu: () => void }) {
       </div>
       <div className="space-y-2">
         <p className="text-text-main font-black text-xl tracking-tight">Escaneando el área</p>
-        <p className="text-text-secondary text-sm font-medium italic">Buscando locales abiertos cerca de ti...</p>
+        <p className="text-text-secondary text-sm font-medium italic">Obteniendo tu ubicación y buscando locales...</p>
+        <p className="text-[10px] text-gray-400 max-w-[200px] mx-auto leading-tight mt-4">
+          Si este proceso demora demasiado, asegúrate de tener el GPS activado y haber concedido permisos.
+        </p>
       </div>
     </div>
   );
@@ -2490,7 +2582,7 @@ function StoresView({ onOpenMenu }: { onOpenMenu: () => void }) {
             Por favor, activa el GPS en tu dispositivo o permite el acceso en tu navegador y recarga la página.
           </p>
           <button 
-            onClick={() => window.location.reload()}
+            onClick={() => initLocation()}
             className="w-full py-3 bg-red-500 text-white rounded-2xl font-bold text-xs uppercase tracking-widest shadow-lg shadow-red-500/30 active:scale-95 transition-all"
           >
             Reintentar Acceso
