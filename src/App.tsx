@@ -1406,7 +1406,10 @@ export default function App() {
         <main className="flex-grow min-w-0 relative overflow-visible">
           
           {currentView === 'stores' ? (
-            <StoresView onOpenMenu={() => setIsSidebarOpen(true)} />
+            <StoresView 
+              onOpenMenu={() => setIsSidebarOpen(true)} 
+              addNotification={addNotification}
+            />
           ) : (
             <>
               {/* Header & Search Persistent - Sticky on Mobile */}
@@ -2263,7 +2266,7 @@ function AuthWall({ onLogin, onGoogleLogin, onReset, onDemo, isLoading, status, 
 
 const BIG_CHAINS = ['Lider', 'Jumbo', 'Santa Isabel', 'Unimarc', 'Tottus', 'Acuenta', 'Mayorista 10', 'Erbi', 'Oxxo', 'Ok Market'];
 
-function StoresView({ onOpenMenu }: { onOpenMenu: () => void }) {
+function StoresView({ onOpenMenu, addNotification }: { onOpenMenu: () => void, addNotification: (msg: string, type?: 'success' | 'error' | 'info') => void }) {
   const [coords, setCoords] = useState<{ latitude: number; longitude: number } | null>(null);
   const [allStores, setAllStores] = useState<any[]>([]);
   const [filteredStores, setFilteredStores] = useState<any[]>([]);
@@ -2272,6 +2275,31 @@ function StoresView({ onOpenMenu }: { onOpenMenu: () => void }) {
   const [selectedCategory, setSelectedCategory] = useState<'all' | 'big_chain' | 'others'>('all');
   const [selectedBrand, setSelectedBrand] = useState<string | null>(null);
   const [showOnlyOpen, setShowOnlyOpen] = useState(false);
+  const [manualCity, setManualCity] = useState("");
+
+  const fetchByManualLocation = async () => {
+    if (!manualCity.trim()) return;
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(manualCity)}&limit=1`);
+      if (res.ok) {
+        const data = await res.json();
+        if (data && data[0]) {
+          const { lat, lon } = data[0];
+          const latitude = parseFloat(lat);
+          const longitude = parseFloat(lon);
+          setCoords({ latitude, longitude });
+          fetchStores(latitude, longitude);
+          return;
+        }
+      }
+      throw new Error("No pudimos encontrar esa ubicación.");
+    } catch (e: any) {
+      setError(`Error: ${e.message}`);
+      setLoading(false);
+    }
+  };
 
   const calculateDistance = (lat1: number, lon1: number, lat2: number, lon2: number) => {
     const R = 6371; // km
@@ -2355,40 +2383,81 @@ function StoresView({ onOpenMenu }: { onOpenMenu: () => void }) {
 
   const fetchStores = async (latitude: number, longitude: number) => {
     try {
-      addNotification("Conexión con satélites establecida. Buscando locales...", 'info');
-      const query = `[out:json];nwr["shop"~"supermarket|convenience|grocery"](around:5000,${latitude},${longitude});out center;`;
+      addNotification("Conexión establecida. Buscando supermercados...", 'info');
+      
+      // Query optimizada para Overpass
+      const query = `[out:json][timeout:25];nwr["shop"~"supermarket|convenience|grocery"](around:5000,${latitude},${longitude});out center;`;
+      
       const endpoints = [
         'https://overpass-api.de/api/interpreter',
-        'https://overpass.kumi.systems/api/interpreter',
-        'https://lz4.overpass-api.de/api/interpreter'
+        'https://lz4.overpass-api.de/api/interpreter',
+        'https://z.overpass-api.de/api/interpreter',
+        'https://overpass.kumi.systems/api/interpreter'
       ];
       
-      let response: Response | null = null;
-      let lastError: any = null;
+      let data = null;
+      let lastErrorName = "";
 
       for (const url of endpoints) {
         try {
+          console.log(`[Overpass] Intentando mirror: ${url}`);
           const controller = new AbortController();
-          const timeoutId = setTimeout(() => controller.abort(), 8000);
-          response = await fetch(`${url}?data=${encodeURIComponent(query)}`, { signal: controller.signal });
+          const timeoutId = setTimeout(() => controller.abort(), 10000);
+          
+          const response = await fetch(`${url}?data=${encodeURIComponent(query)}`, { 
+            signal: controller.signal,
+            headers: { 'Accept': 'application/json' }
+          });
+          
           clearTimeout(timeoutId);
-          if (response.ok) break;
-        } catch (e) {
-          lastError = e;
+          
+          if (response.ok) {
+            data = await response.json();
+            console.log(`[Overpass] Éxito con mirror: ${url}`);
+            break;
+          } else {
+            console.warn(`[Overpass] Mirror ${url} respondió con error: ${response.status}`);
+            lastErrorName = `HTTP ${response.status}`;
+          }
+        } catch (e: any) {
+          console.warn(`[Overpass] Fallo mirror ${url}:`, e.message);
+          lastErrorName = e.name === 'AbortError' ? 'Tiempo Agotado' : e.message;
           continue;
         }
       }
 
-      if (!response || !response.ok) {
-        throw lastError || new Error("Los servidores de mapas están saturados.");
+      if (!data) {
+        console.log("[GPS] Overpass falló. Intentando fallback con Nominatim...");
+        try {
+          const nominatimUrl = `https://nominatim.openstreetmap.org/search?format=json&q=supermarket&bounded=1&viewbox=${longitude-0.1},${latitude+0.1},${longitude+0.1},${latitude-0.1}&limit=20`;
+          const nomRes = await fetch(nominatimUrl);
+          if (nomRes.ok) {
+            const nomData = await nomRes.json();
+            if (nomData && nomData.length > 0) {
+              data = { 
+                elements: nomData.map((item: any) => ({
+                  id: item.place_id,
+                  lat: parseFloat(item.lat),
+                  lon: parseFloat(item.lon),
+                  tags: { name: item.display_name.split(',')[0] }
+                }))
+              };
+              console.log("[GPS] Fallback Nominatim exitoso.");
+            }
+          }
+        } catch (e) {
+          console.error("[GPS] Fallback Nominatim falló:", e);
+        }
       }
 
-      const data = await response.json();
+      if (!data) {
+        throw new Error(lastErrorName || "Servidores de mapas fuera de servicio.");
+      }
       
       if (!data.elements || data.elements.length === 0) {
         setAllStores([]);
         setLoading(false);
-        setError("No encontramos supermercados cerca de tu ubicación actual (5km).");
+        setError("No hay supermercados en un radio de 5km de tu posición actual.");
         return;
       }
 
@@ -2404,7 +2473,7 @@ function StoresView({ onOpenMenu }: { onOpenMenu: () => void }) {
           const hours = tags.opening_hours;
           const isOpen = hours ? checkIsOpen(hours) : true;
           const displayHours = hours || "08:30-21:00";
-          const name = tags.name || tags.brand || tags.operator || "Almacén";
+          const name = tags.name || tags.brand || tags.operator || "Supermercado";
           const brand = tags.brand || tags.operator || "";
           const catInfo = getStoreCategory(name, brand);
 
@@ -2425,14 +2494,15 @@ function StoresView({ onOpenMenu }: { onOpenMenu: () => void }) {
         } catch (e) {
           return null;
         }
-      }).filter(Boolean).sort((a: any, b: any) => a.distance - b.distance);
+      }).filter((s: any) => s !== null).sort((a: any, b: any) => a.distance - b.distance);
 
       setAllStores(processedStores.slice(0, 50));
       setLoading(false);
       setError(null);
-    } catch (err) {
-      console.error("Error fetching stores:", err);
-      setError("Error de Red: El servicio de mapas no responde. Revisa tu internet o intenta de nuevo.");
+      addNotification("Supermercados cargados correctamente.", 'success');
+    } catch (err: any) {
+      console.error("[GPS] Error final fetching stores:", err);
+      setError(`Error: No pudimos obtener datos del mapa (${err.message}). Reintenta en unos segundos.`);
       setLoading(false);
     }
   };
@@ -2442,15 +2512,19 @@ function StoresView({ onOpenMenu }: { onOpenMenu: () => void }) {
     setError(null);
     setAllStores([]);
     
-    // Timeout global para evitar carga infinita
+    // Usamos una variable local para trackear si ya terminamos
+    let finished = false;
+
     const globalTimeout = setTimeout(() => {
-      if (loading) {
-        setError("La búsqueda de GPS está tardando demasiado. Prueba moviéndote o verifica los permisos.");
+      if (!finished) {
+        finished = true;
+        setError("La búsqueda GPS está demorando demasiado. Asegúrate de tener el GPS activo y estar en un lugar con señal.");
         setLoading(false);
       }
-    }, 30000);
+    }, 25000);
 
     if (!navigator.geolocation) {
+      finished = true;
       setError("Tu navegador no soporta geolocalización");
       setLoading(false);
       clearTimeout(globalTimeout);
@@ -2458,42 +2532,48 @@ function StoresView({ onOpenMenu }: { onOpenMenu: () => void }) {
     }
 
     const tryGetPosition = (highAccuracy: boolean) => {
+      if (finished) return;
+
       const options = {
         enableHighAccuracy: highAccuracy,
         timeout: 10000, 
-        maximumAge: highAccuracy ? 0 : 300000 // Aumentamos age para baja precisión
+        maximumAge: highAccuracy ? 0 : 60000
       };
 
       navigator.geolocation.getCurrentPosition(
         (pos) => {
+          if (finished) return;
+          finished = true;
           clearTimeout(globalTimeout);
           const { latitude, longitude } = pos.coords;
+          console.log(`[GPS] Ubicación obtenida (${highAccuracy ? 'GPS' : 'Red'}):`, latitude, longitude);
           setCoords({ latitude, longitude });
           fetchStores(latitude, longitude);
         },
         (err) => {
-          console.error(`Geolocation error (highAccuracy=${highAccuracy}):`, err);
+          if (finished) return;
+          console.error(`[GPS] Error (${highAccuracy ? 'Alta' : 'Baja'} precisión):`, err.message);
           
           if (highAccuracy) {
-            console.log("Reintentando con precisión normal...");
-            addNotification("Buscando con señal de red...", 'info');
+            addNotification("Buscando con señal de respaldo...", 'info');
             tryGetPosition(false);
-            return;
+          } else {
+            finished = true;
+            clearTimeout(globalTimeout);
+            let msg = "No se pudo determinar tu ubicación.";
+            if (err.code === 1) msg = "Acceso Denegado: Permite el uso de tu ubicación en los ajustes del navegador.";
+            if (err.code === 2) msg = "Ubicación No Disponible: El dispositivo no tiene señal GPS.";
+            if (err.code === 3) msg = "Tiempo Agotado: La señal es demasiado débil actualmente.";
+            
+            setError(msg);
+            setLoading(false);
           }
-
-          clearTimeout(globalTimeout);
-          let msg = "No pudimos obtener tu ubicación.";
-          if (err.code === 1) msg = "Acceso Denegado: Permite el uso de tu ubicación en los ajustes del navegador.";
-          if (err.code === 2) msg = "Ubicación No Disponible: El GPS no tiene señal. Prueba cerca de una ventana o en la terraza.";
-          if (err.code === 3) msg = "Tiempo Agotado: La señal GPS es muy débil. Asegúrate de tener el GPS activado.";
-          
-          setError(msg);
-          setLoading(false);
         },
         options
       );
     };
 
+    console.log("[GPS] Iniciando búsqueda de ubicación...");
     tryGetPosition(true);
   };
 
@@ -2523,6 +2603,25 @@ function StoresView({ onOpenMenu }: { onOpenMenu: () => void }) {
         >
           Omitir y continuar sin GPS
         </button>
+        <div className="mt-8 pt-8 border-t border-gray-100 w-full max-w-[280px]">
+          <p className="text-[10px] text-gray-400 font-bold uppercase tracking-wider mb-3">¿GPS no funciona?</p>
+          <div className="flex gap-2">
+            <input 
+              type="text" 
+              placeholder="Ej: Santiago, Chile" 
+              className="flex-grow bg-gray-50 border border-gray-200 rounded-lg px-3 py-2 text-xs focus:ring-1 focus:ring-accent outline-none"
+              value={manualCity}
+              onChange={(e) => setManualCity(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && fetchByManualLocation()}
+            />
+            <button 
+              onClick={fetchByManualLocation}
+              className="px-3 py-2 bg-black text-white rounded-lg text-xs font-bold"
+            >
+              Buscar
+            </button>
+          </div>
+        </div>
       </div>
     </div>
   );
