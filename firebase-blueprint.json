@@ -33,14 +33,29 @@
         "listId": { "type": "string" },
         "familyId": { "type": "string" },
         "checked": { "type": "boolean" },
-        "quantity": { "type": "string" }
+        "quantity": { "type": "string" },
+        "is_carryover": { "type": "boolean" }
       },
       "required": ["name", "listId", "familyId"]
+    },
+    "PurchaseHistory": {
+      "title": "PurchaseHistory",
+      "description": "Un registro de compra finalizada",
+      "type": "object",
+      "properties": {
+        "items": { "type": "array" },
+        "familyId": { "type": "string" },
+        "listId": { "type": "string" },
+        "timestamp": { "type": "string" },
+        "totalItems": { "type": "number" }
+      },
+      "required": ["items", "familyId", "timestamp"]
     }
   },
   "firestore": {
     "/users/{userId}": { "schema": "UserProfile", "description": "Perfiles de usuario" },
     "/lists/{listId}": { "schema": "ShoppingList", "description": "Listas de la compra" },
-    "/items/{itemId}": { "schema": "GroceryItem", "description": "Productos de las listas" }
+    "/items/{itemId}": { "schema": "GroceryItem", "description": "Productos de las listas" },
+    "/history/{historyId}": { "schema": "PurchaseHistory", "description": "Historial de compras finalizadas" }
   }
 }

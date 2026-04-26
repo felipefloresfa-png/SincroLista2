@@ -15,6 +15,7 @@ import {
   usersCollection,
   listsCollection,
   activitiesCollection,
+  historyCollection,
   signInAnonymously
 } from './lib/firebaseUtils';
 import firebaseConfig from '../firebase-applet-config.json';
@@ -40,6 +41,7 @@ import {
   LogOut, 
   Share2, 
   ShoppingBasket,
+  ShoppingBag,
   RefreshCw,
   List as ListIcon,
   Search,
@@ -75,7 +77,20 @@ import {
   Clock,
   Filter,
   Info,
-  CheckCircle2
+  CheckCircle2,
+  Milk,
+  Coffee,
+  Egg,
+  Droplet,
+  Sparkles,
+  Package,
+  Box,
+  Apple,
+  StickyNote,
+  Beef,
+  Cookie,
+  Flame,
+  ChefHat
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { analyzeItem, getSmartRecommendations, parseVoiceInput, ItemInfo, ParsedVoiceItem } from './lib/gemini';
@@ -150,6 +165,7 @@ interface GroceryItem {
   addedBy: string;
   familyId: string;
   createdAt: any;
+  is_carryover?: boolean;
 }
 
 interface ShoppingList {
@@ -1107,6 +1123,80 @@ export default function App() {
     await logActivity('delete', item.name);
   };
 
+  const handleFinishShopping = async () => {
+    if (!profile || !activeListId) return;
+    
+    const checkedItems = items.filter(i => i.checked);
+    const pendingItems = items.filter(i => !i.checked);
+    
+    if (checkedItems.length === 0) {
+      addNotification("No hay productos marcados para finalizar", 'info');
+      return;
+    }
+
+    try {
+      const batch = writeBatch(db);
+      
+      // 1. Crear entrada en el historial
+      const historyEntryRef = doc(historyCollection);
+      batch.set(historyEntryRef, {
+        familyId: profile.familyId,
+        listId: activeListId,
+        items: checkedItems.map(i => ({ name: i.name, quantity: i.quantity, category: i.category })),
+        totalItems: checkedItems.length,
+        timestamp: serverTimestamp()
+      });
+      
+      // 2. Eliminar items completados de la lista activa
+      checkedItems.forEach(item => {
+        batch.delete(doc(db, 'items', item.id));
+      });
+      
+      // 3. Marcar items pendientes como is_carryover
+      pendingItems.forEach(item => {
+        batch.update(doc(db, 'items', item.id), { is_carryover: true });
+      });
+      
+      await batch.commit();
+      
+      await logActivity('clear', `Compra finalizada: ${checkedItems.length} items archivados`);
+      addNotification(`¡Compra finalizada! ${checkedItems.length} productos archivados.`, 'success');
+      
+      setPromptConfig(prev => ({ ...prev, isOpen: false }));
+    } catch (e: any) {
+      addLog(`Error al finalizar compra: ${e.message}`);
+      addNotification("Error al procesar la compra", 'error');
+    }
+  };
+
+  const handlePantryToggle = async (name: string) => {
+    if (!activeListId || !profile) {
+      addNotification("Selecciona una lista primero", 'info');
+      return;
+    }
+
+    const existing = items.find(i => i.name.toLowerCase() === name.toLowerCase());
+    
+    if (existing) {
+      // Incrementar cantidad
+      const currentQty = parseInt(existing.quantity) || 1;
+      const newQty = (currentQty + 1).toString();
+      try {
+        await updateDoc(doc(db, 'items', existing.id), {
+          quantity: newQty,
+          checked: false 
+        });
+        addNotification(`${name} actualizado: x${newQty}`, 'success');
+      } catch (e) {
+        addNotification("Error al actualizar", 'error');
+      }
+    } else {
+      // Agregar nuevo
+      await addItem(name);
+      addNotification(`${name} agregado a la lista`, 'success');
+    }
+  };
+
   const clearChecked = async () => {
     const checkedItems = items.filter(i => i.checked);
     const batch = writeBatch(db);
@@ -1390,6 +1480,16 @@ export default function App() {
                   <MapPin className="w-4 h-4" />
                   <span className="text-sm font-semibold">Supermercados</span>
                 </button>
+                <button 
+                  onClick={() => { setCurrentView('pantry'); setActiveListId(null); setIsSidebarOpen(false); }}
+                  className={cn(
+                    "w-full flex items-center gap-3 px-3 py-2.5 rounded-xl transition-all",
+                    currentView === 'pantry' ? "bg-accent text-white shadow-md shadow-accent/20" : "hover:bg-gray-50 text-text-secondary"
+                  )}
+                >
+                  <ShoppingBasket className="w-4 h-4" />
+                  <span className="text-sm font-semibold">Modo Despensa</span>
+                </button>
               </div>
             </div>
 
@@ -1456,6 +1556,12 @@ export default function App() {
             <StoresView 
               onOpenMenu={() => setIsSidebarOpen(true)} 
               addNotification={addNotification}
+            />
+          ) : currentView === 'pantry' ? (
+            <PantryView 
+              onOpenMenu={() => setIsSidebarOpen(true)}
+              activeItems={items}
+              onToggleItem={(name) => handlePantryToggle(name)}
             />
           ) : (
             <>
@@ -1792,6 +1898,37 @@ export default function App() {
             </div>
           )}
           </div>
+          {/* Floating Finish Button */}
+          <AnimatePresence>
+            {items.some(i => i.checked) && (
+              <motion.div 
+                initial={{ opacity: 0, y: 100, scale: 0.8 }}
+                animate={{ opacity: 1, y: 0, scale: 1 }}
+                exit={{ opacity: 0, y: 100, scale: 0.8 }}
+                className="fixed bottom-24 lg:bottom-28 left-1/2 -translate-x-1/2 z-50 pointer-events-none"
+              >
+                <button 
+                  onClick={() => {
+                    const count = items.filter(i => i.checked).length;
+                    setPromptConfig({
+                      isOpen: true,
+                      title: '¿Finalizar Compra?',
+                      description: `Archivaremos ${count} productos completados en tu historial. Los pendientes se mantendrán para la próxima vez.`,
+                      type: 'confirm',
+                      onConfirm: handleFinishShopping
+                    });
+                  }}
+                  className="pointer-events-auto bg-green-600 text-white px-8 py-4 rounded-full font-black uppercase text-sm tracking-widest shadow-2xl flex items-center gap-3 hover:scale-105 active:scale-95 transition-all group"
+                >
+                  <ShoppingBag className="w-5 h-5 group-hover:rotate-12 transition-transform" />
+                  <span>Finalizar Compra</span>
+                  <div className="bg-white/20 px-2 py-0.5 rounded-lg text-[10px]">
+                    {items.filter(i => i.checked).length}
+                  </div>
+                </button>
+              </motion.div>
+            )}
+          </AnimatePresence>
         </>
       )}
     </main>
@@ -2148,6 +2285,9 @@ function ItemRow({ item, onToggle, onDelete, onEdit, onUpdateQty, onTogglePriori
           >
             {item.name}
           </button>
+          {item.is_carryover && !item.checked && (
+            <span className="text-[7px] font-black uppercase tracking-tighter bg-accent/10 text-accent px-1 py-0.5 rounded-sm shrink-0">Anterior</span>
+          )}
           <button 
             onClick={onTogglePriority}
             className="shrink-0 p-0.5 hover:bg-gray-100 rounded-lg transition-colors"
@@ -2881,6 +3021,128 @@ function StoresView({ onOpenMenu, addNotification }: { onOpenMenu: () => void, a
             Haz clic en un local para ver la ruta exacta y el tráfico en Google Maps.
           </p>
         </div>
+      </div>
+    </div>
+  );
+}
+
+const PANTRY_ESSENTIALS = [
+  { name: 'Leche', icon: '🥛', lucide: 'Milk', color: 'bg-blue-50', text: 'text-blue-600', span: 'col-span-2 row-span-2' },
+  { name: 'Pan', icon: '🍞', lucide: 'Box', color: 'bg-orange-50', text: 'text-orange-600', span: 'col-span-1 row-span-1' },
+  { name: 'Café', icon: '☕', lucide: 'Coffee', color: 'bg-amber-50', text: 'text-amber-600', span: 'col-span-1 row-span-1' },
+  { name: 'Detergente', icon: '🧼', lucide: 'Sparkles', color: 'bg-purple-50', text: 'text-purple-600', span: 'col-span-1 row-span-2' },
+  { name: 'Huevos', icon: '🥚', lucide: 'Egg', color: 'bg-yellow-50', text: 'text-yellow-600', span: 'col-span-1 row-span-1' },
+  { name: 'Arroz', icon: '🍚', lucide: 'Package', color: 'bg-gray-50', text: 'text-gray-600', span: 'col-span-1 row-span-1' },
+  { name: 'Carne', icon: '🥩', lucide: 'Beef', color: 'bg-red-50', text: 'text-red-600', span: 'col-span-2 row-span-2' },
+  { name: 'Pasta', icon: '🍝', lucide: 'Package', color: 'bg-yellow-50', text: 'text-yellow-600', span: 'col-span-1 row-span-1' },
+  { name: 'Galletas', icon: '🍪', lucide: 'Cookie', color: 'bg-amber-50', text: 'text-amber-600', span: 'col-span-1 row-span-1' },
+  { name: 'Fruta', icon: '🍎', lucide: 'Apple', color: 'bg-red-50', text: 'text-red-600', span: 'col-span-1 row-span-1' },
+  { name: 'Aceite', icon: '🫗', lucide: 'Droplet', color: 'bg-yellow-50', text: 'text-yellow-600', span: 'col-span-1 row-span-1' },
+  { name: 'Snacks', icon: '🥨', lucide: 'Flame', color: 'bg-orange-50', text: 'text-orange-600', span: 'col-span-1 row-span-1' },
+];
+
+function PantryView({ onOpenMenu, activeItems, onToggleItem }: { 
+  onOpenMenu: () => void, 
+  activeItems: any[],
+  onToggleItem: (name: string) => void
+}) {
+  const IconMap: any = {
+    Milk, Coffee, Egg, Droplet, Sparkles, Package, Box, Apple, StickyNote, Beef, Cookie, Flame
+  };
+
+  return (
+    <div className="p-4 md:p-8 lg:p-12 space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500">
+      <div className="flex flex-col gap-6">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <button 
+              onClick={onOpenMenu}
+              className="lg:hidden p-2.5 bg-white border border-border rounded-xl shadow-sm active:scale-95 transition-all"
+            >
+              <Menu className="w-5 h-5 text-text-main" />
+            </button>
+            <div className="flex flex-col gap-1">
+              <div className="flex items-center gap-2">
+                <div className="w-10 h-10 bg-accent/10 rounded-xl grid place-items-center sm:w-12 sm:h-12">
+                  <ShoppingBasket className="w-5 h-5 text-accent sm:w-6 sm:h-6" />
+                </div>
+                <div>
+                  <h2 className="text-2xl sm:text-3xl font-black tracking-tighter text-text-main leading-tight">Modo Despensa</h2>
+                  <p className="text-[10px] sm:text-xs text-text-secondary font-medium italic">Agrega tus esenciales en un toque</p>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 auto-rows-[100px] md:auto-rows-[120px] gap-3 h-full">
+          {PANTRY_ESSENTIALS.map((item, i) => {
+            const Icon = IconMap[item.lucide] || Package;
+            const isInList = activeItems.some(ai => ai.name.toLowerCase() === item.name.toLowerCase());
+            const currentQty = activeItems.find(ai => ai.name.toLowerCase() === item.name.toLowerCase())?.quantity || null;
+
+            return (
+              <motion.button
+                key={item.name}
+                initial={{ opacity: 0, scale: 0.9 }}
+                animate={{ opacity: 1, scale: 1 }}
+                transition={{ delay: i * 0.05 }}
+                onClick={() => onToggleItem(item.name)}
+                className={cn(
+                  "relative rounded-3xl p-4 flex flex-col items-center justify-center gap-2 transition-all active:scale-95 group border-2",
+                  item.span,
+                  isInList 
+                    ? "bg-white border-accent shadow-lg shadow-accent/5" 
+                    : `${item.color} border-transparent hover:border-black/5`
+                )}
+              >
+                <div className={cn(
+                  "p-3 rounded-2xl transition-all duration-300",
+                  isInList ? "bg-accent/10 scale-110" : "bg-white/80 group-hover:bg-white shadow-sm"
+                )}>
+                  <Icon className={cn("w-6 h-6 md:w-8 md:h-8", isInList ? "text-accent" : item.text)} />
+                </div>
+                
+                <div className="text-center">
+                  <span className={cn(
+                    "text-[10px] md:text-xs font-black uppercase tracking-widest block",
+                    isInList ? "text-accent" : "text-text-main"
+                  )}>
+                    {item.name}
+                  </span>
+                  {isInList && (
+                    <span className="text-[8px] font-bold text-accent/60 uppercase">
+                      En lista {currentQty && `(x${currentQty})`}
+                    </span>
+                  )}
+                </div>
+
+                {isInList && (
+                  <div className="absolute top-2 right-2">
+                    <motion.div 
+                      initial={{ scale: 0 }}
+                      animate={{ scale: 1 }}
+                      className="w-5 h-5 bg-accent text-white rounded-full flex items-center justify-center shadow-md border-2 border-white"
+                    >
+                      <Check className="w-3 h-3" strokeWidth={4} />
+                    </motion.div>
+                  </div>
+                )}
+              </motion.button>
+            );
+          })}
+        </div>
+      </div>
+
+      <div className="p-6 bg-accent/5 border border-accent/10 rounded-3xl space-y-3">
+        <div className="flex items-center gap-2 text-accent">
+          <Star className="w-4 h-4 fill-accent" />
+          <h3 className="text-sm font-black uppercase tracking-widest">Tip de Ahorro</h3>
+        </div>
+        <p className="text-xs text-text-secondary leading-relaxed font-medium">
+          El <strong>Modo Despensa</strong> muestra los productos que compras con más frecuencia. 
+          Tocarlos los agrega directamente a tu lista activa con su categoría automática.
+        </p>
       </div>
     </div>
   );

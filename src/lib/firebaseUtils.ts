@@ -53,3 +53,4 @@ export const itemsCollection = collection(db, 'items');
 export const familiesCollection = collection(db, 'families');
 export const listsCollection = collection(db, 'lists');
 export const activitiesCollection = collection(db, 'activities');
+export const historyCollection = collection(db, 'history');
