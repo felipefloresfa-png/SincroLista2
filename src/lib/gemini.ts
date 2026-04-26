@@ -100,22 +100,35 @@ export interface ParsedVoiceItem {
 export async function parseVoiceInput(text: string): Promise<ParsedVoiceItem[]> {
   console.log(`[IA] Procesando dictado: "${text}"`);
   
+  const fallbackSplit = (t: string) => t.split(/[,;\n]|\sy\s|\se\s/).map(item => ({ name: item.trim() })).filter(i => i.name.length > 1);
+
   if (!process.env.GEMINI_API_KEY) {
-    // Simple split by commas as fallback
-    return text.split(/[,,y\n]+/).map(item => ({ name: item.trim() })).filter(i => i.name.length > 0);
+    return fallbackSplit(text);
   }
 
   try {
     const response = await ai.models.generateContent({
       model: "gemini-3-flash-preview",
-      contents: `Convierte este dictado de voz de lista de compras en un array JSON de objetos: "${text}".
-      Cada objeto debe tener:
-      - name: nombre del producto (en singular, capitalizado)
-      - quantity: número de unidades (opcional, null si no se especifica)
-      - unit: unidad de medida (opcional, null si no se especifica)
+      contents: `Extrae todos los productos de este dictado de voz para una lista de compras: "${text}".
       
-      Ejemplo input: "necesito comprar tres litros de leche dos kilos de arroz y una lechuga"
-      Ejemplo output: [{"name": "Leche", "quantity": 3, "unit": "l"}, {"name": "Arroz", "quantity": 2, "unit": "kg"}, {"name": "Lechuga", "quantity": 1, "unit": "uds"}]`,
+      IMPORTANTE:
+      - Identifica cada producto por separado incluso si no hay comas o conectores (ej: "pan leche huevos" -> 3 productos).
+      - Si el usuario dice "un x", "dos y", etc., extrae la cantidad.
+      - Limpia el nombre del producto (ej: "comprar leche" -> "Leche").
+      - Devuelve un array JSON de objetos.
+      
+      Cada objeto debe tener:
+      - name: nombre del producto (en singular, capitalizado, sin excedentes).
+      - quantity: número de unidades (opcional, null si no se especifica).
+      - unit: unidad de medida (l, kg, pack, uds, etc.) (opcional, null si no se especifica).
+      
+      Ejemplo input: "tráeme tres litros de leche dos kilos de arroz panes y una lechuga"
+      Ejemplo output: [
+        {"name": "Leche", "quantity": 3, "unit": "l"}, 
+        {"name": "Arroz", "quantity": 2, "unit": "kg"}, 
+        {"name": "Pan", "quantity": null, "unit": "uds"}, 
+        {"name": "Lechuga", "quantity": 1, "unit": "uds"}
+      ]`,
       config: {
         responseMimeType: "application/json",
         responseSchema: {

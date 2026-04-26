@@ -2433,30 +2433,43 @@ function StoresView({ onOpenMenu }: { onOpenMenu: () => void }) {
       return;
     }
 
-    const options = {
-      enableHighAccuracy: true, // Cambiamos a true por defecto, si falla el usuario reintenta
-      timeout: 20000,           // Más tiempo para móviles (20s)
-      maximumAge: 0             // Forzar ubicación fresca
+    // Intentar primero con alta precisión, si falla reintentar con baja
+    const tryGetPosition = (highAccuracy: boolean) => {
+      const options = {
+        enableHighAccuracy: highAccuracy,
+        timeout: highAccuracy ? 10000 : 15000, 
+        maximumAge: highAccuracy ? 0 : 60000
+      };
+
+      navigator.geolocation.getCurrentPosition(
+        (pos) => {
+          const { latitude, longitude } = pos.coords;
+          setCoords({ latitude, longitude });
+          fetchStores(latitude, longitude);
+        },
+        (err) => {
+          console.error(`Geolocation error (highAccuracy=${highAccuracy}):`, err);
+          
+          if (highAccuracy) {
+            console.log("Reintentando con precisión normal...");
+            addNotification("Buscando con señal de red...", 'info');
+            tryGetPosition(false);
+            return;
+          }
+
+          let msg = "No pudimos obtener tu ubicación.";
+          if (err.code === 1) msg = "Acceso Denegado: Permite el uso de tu ubicación en los ajustes del navegador.";
+          if (err.code === 2) msg = "Ubicación No Disponible: El GPS no tiene señal. Prueba cerca de una ventana.";
+          if (err.code === 3) msg = "Tiempo Agotado: La señal GPS es muy débil. Reintenta en un momento.";
+          
+          setError(msg);
+          setLoading(false);
+        },
+        options
+      );
     };
 
-    navigator.geolocation.getCurrentPosition(
-      (pos) => {
-        const { latitude, longitude } = pos.coords;
-        setCoords({ latitude, longitude });
-        fetchStores(latitude, longitude);
-      },
-      (err) => {
-        console.error("Geolocation error:", err);
-        let msg = "Error al obtener ubicación";
-        if (err.code === 1) msg = "Acceso Denegado: Permite el uso de tu ubicación en los ajustes del navegador.";
-        if (err.code === 2) msg = "Ubicación No Disponible: El GPS no tiene señal o está desactivado.";
-        if (err.code === 3) msg = "Tiempo Agotado: Se tardó demasiado en obtener la ubicación. Prueba en un lugar con mejor señal.";
-        
-        setError(msg);
-        setLoading(false);
-      },
-      options
-    );
+    tryGetPosition(true);
   };
 
   useEffect(() => {
