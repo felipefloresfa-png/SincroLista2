@@ -98,7 +98,13 @@ import {
   BarChart2,
   PieChart,
   Calendar,
-  ShoppingBag as ShoppingBagIcon
+  ShoppingBag as ShoppingBagIcon,
+  Settings,
+  Lock,
+  Megaphone,
+  Send,
+  Bug,
+  DollarSign
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { analyzeItem, getSmartRecommendations, parseVoiceInput, ItemInfo, ParsedVoiceItem } from './lib/gemini';
@@ -559,13 +565,62 @@ export default function App() {
   const [searchQuery, setSearchQuery] = useState('');
   const [lists, setLists] = useState<ShoppingList[]>([]);
   const [activeListId, setActiveListId] = useState<string | null>(null);
-  const [currentView, setCurrentView] = useState<'list' | 'stores' | 'pantry' | 'history' | 'stats'>('list');
+  const [currentView, setCurrentView] = useState<'list' | 'stores' | 'pantry' | 'history' | 'stats' | 'admin'>('list');
   const [activities, setActivities] = useState<ActivityItem[]>([]);
   const [syncedUsers, setSyncedUsers] = useState<UserProfile[]>([]);
   const [history, setHistory] = useState<any[]>([]);
   const [historyLoading, setHistoryLoading] = useState(true);
+  const [isAdmin, setIsAdmin] = useState(false);
+  const [isAdminLoading, setIsAdminLoading] = useState(true);
   const [isScanning, setIsScanning] = useState(false);
   const [scanningTargetId, setScanningTargetId] = useState<string | null>(null);
+
+  // Determine view based on URL
+  useEffect(() => {
+    const path = window.location.pathname;
+    if (path === '/admin') {
+      setCurrentView('admin');
+    }
+  }, []);
+
+  // Check if user is admin
+  useEffect(() => {
+    if (user) {
+      const checkAdmin = async () => {
+        try {
+          const adminDoc = await getDoc(doc(db, 'admins', user.uid));
+          setIsAdmin(adminDoc.exists());
+        } catch (error) {
+          console.error("Error checking admin status:", error);
+          setIsAdmin(false);
+        } finally {
+          setIsAdminLoading(false);
+        }
+      };
+      checkAdmin();
+    } else {
+      setIsAdmin(false);
+      setIsAdminLoading(false);
+    }
+  }, [user]);
+
+  // Handle reports functionality
+  const reportError = async (message: string) => {
+    if (!user) return;
+    try {
+      await addDoc(collection(db, 'reports'), {
+        userId: user.uid,
+        userName: user.displayName,
+        userEmail: user.email,
+        message,
+        status: 'pending',
+        timestamp: serverTimestamp()
+      });
+      addNotification("Error reportado con éxito. Gracias por ayudarnos a mejorar.", "success");
+    } catch (error) {
+      addNotification("Error al enviar el reporte.", "error");
+    }
+  };
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleScanReceipt = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -1764,6 +1819,18 @@ export default function App() {
                   <BarChart2 className="w-4 h-4" />
                   <span className="text-sm font-semibold">Estadísticas</span>
                 </button>
+                {isAdmin && (
+                  <button 
+                    onClick={() => { setCurrentView('admin'); setIsSidebarOpen(false); }}
+                    className={cn(
+                      "w-full flex items-center gap-3 px-3 py-2.5 rounded-xl transition-all",
+                      currentView === 'admin' ? "bg-accent text-white shadow-md shadow-accent/20" : "hover:bg-gray-50 text-text-secondary"
+                    )}
+                  >
+                    <Settings className="w-4 h-4" />
+                    <span className="text-sm font-semibold">Panel Admin</span>
+                  </button>
+                )}
               </div>
             </div>
 
@@ -1826,6 +1893,14 @@ export default function App() {
         {/* Main Content Area */}
         <main className="flex-grow min-w-0 relative overflow-visible">
           
+          {currentView === 'admin' && (
+            <AdminPanelView 
+              isAdmin={isAdmin}
+              onOpenMenu={() => setIsSidebarOpen(true)}
+              onExitAdmin={() => setCurrentView('list')}
+            />
+          )}
+
           {currentView === 'stores' ? (
             <StoresView 
               onOpenMenu={() => setIsSidebarOpen(true)} 
@@ -2354,6 +2429,21 @@ export default function App() {
 
               {/* Account Actions */}
               <div className="pt-4 border-t border-border space-y-4">
+                <button 
+                  onClick={() => {
+                    setIsSettingsOpen(false);
+                    setPromptConfig({
+                      isOpen: true,
+                      title: 'Reportar Problema',
+                      description: 'Describe el error o sugerencia técnica para los administradores.',
+                      initialValue: '',
+                      onConfirm: (val) => reportError(val)
+                    });
+                  }}
+                  className="w-full flex items-center justify-center gap-3 py-3 text-text-secondary bg-gray-50 border border-border hover:bg-gray-100 rounded-2xl transition-colors font-black text-[10px] uppercase tracking-widest shadow-xs"
+                >
+                  <Bug className="w-3.5 h-3.5" /> Reportar Error Técnico
+                </button>
                 <button 
                   onClick={() => auth.signOut()} 
                   className="w-full flex items-center justify-center gap-3 py-4 text-red-500 bg-red-50 hover:bg-red-100 rounded-2xl transition-colors font-black text-xs uppercase tracking-widest"
@@ -3891,6 +3981,180 @@ function PurchaseHistoryView({ onOpenMenu, profile, onAddItem, onRepeatPurchase,
             })}
           </div>
         )}
+      </div>
+    </div>
+  );
+}
+
+function AdminPanelView({ isAdmin, onOpenMenu, onExitAdmin }: { isAdmin: boolean, onOpenMenu: () => void, onExitAdmin: () => void }) {
+  const [stats, setStats] = useState({ users: 0, lists: 0, items: 0, spending: 0 });
+  const [reports, setReports] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [announcement, setAnnouncement] = useState("");
+  const [sending, setSending] = useState(false);
+
+  useEffect(() => {
+    const fetchAdminData = async () => {
+      if (!isAdmin) return;
+      setLoading(true);
+      try {
+        const usersSnap = await getDocs(collection(db, 'users'));
+        const listsSnap = await getDocs(collection(db, 'lists'));
+        const historySnap = await getDocs(collection(db, 'history'));
+        const reportsSnap = await getDocs(query(collection(db, 'reports'), orderBy('timestamp', 'desc')));
+
+        let totalSpending = 0;
+        historySnap.forEach(doc => {
+          totalSpending += doc.data().totalCost || 0;
+        });
+
+        setStats({
+          users: usersSnap.size,
+          lists: listsSnap.size,
+          items: 0,
+          spending: totalSpending
+        });
+        setReports(reportsSnap.docs.map(d => ({ id: d.id, ...d.data() })));
+      } catch (error) {
+        console.error("Error fetching admin data:", error);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    fetchAdminData();
+  }, [isAdmin]);
+
+  const sendAnnouncement = async () => {
+    if (!announcement.trim()) return;
+    setSending(true);
+    try {
+      await addDoc(collection(db, 'announcements'), {
+        message: announcement,
+        timestamp: serverTimestamp(),
+        type: 'global'
+      });
+      setAnnouncement("");
+      alert("Anuncio enviado a todos los usuarios.");
+    } catch (error) {
+      console.error("Error sending announcement:", error);
+    } finally {
+      setSending(false);
+    }
+  };
+
+  if (!isAdmin) {
+    return (
+      <div className="flex flex-col items-center justify-center p-12 text-center space-y-6">
+        <Lock className="w-16 h-16 text-accent/20" />
+        <h2 className="text-2xl font-black text-gray-900 uppercase tracking-tighter">Acceso Denegado</h2>
+        <p className="text-gray-500 max-w-xs">Esta área es exclusiva para administradores de SincroLista.</p>
+        <button onClick={onExitAdmin} className="px-6 py-3 bg-accent text-white rounded-2xl font-black uppercase tracking-wider transition-all hover:scale-105 active:scale-95 shadow-xl shadow-accent/20">
+          Volver a mi Lista
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="p-4 md:p-8 lg:p-12 space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500">
+      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+        <div className="flex items-center gap-3">
+          <button 
+            onClick={onOpenMenu}
+            className="p-3 bg-white border border-gray-100 text-text-secondary rounded-2xl hover:border-accent transition-colors shadow-sm active:scale-90"
+          >
+            <Menu className="w-5 h-5" />
+          </button>
+          <div>
+            <h1 className="text-3xl font-black text-gray-900 uppercase tracking-tighter flex items-center gap-2">
+              Panel Admin <Settings className="w-6 h-6 text-accent" />
+            </h1>
+            <p className="text-sm text-gray-500 font-medium lowercase tracking-tight">Gestión global de la plataforma</p>
+          </div>
+        </div>
+        <button 
+          onClick={onExitAdmin}
+          className="px-4 py-2 bg-gray-100 text-gray-600 rounded-xl font-bold text-xs uppercase tracking-wider hover:bg-gray-200 transition-all flex items-center gap-2"
+        >
+          Salir del Admin
+        </button>
+      </div>
+
+      {loading ? (
+        <div className="flex flex-col items-center justify-center py-20 space-y-4">
+          <RefreshCw className="w-8 h-8 text-accent animate-spin" />
+          <p className="text-gray-400 font-medium">Cargando métricas globales...</p>
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+          <StatCard title="Usuarios Totales" value={stats.users.toString()} icon={<Users className="w-5 h-5" />} color="bg-blue-500" />
+          <StatCard title="Listas Activas" value={stats.lists.toString()} icon={<ShoppingBasket className="w-5 h-5" />} color="bg-green-500" />
+          <StatCard title="Gasto Global" value={`$${stats.spending.toLocaleString('es-CL')}`} icon={<DollarSign className="w-5 h-5" />} color="bg-purple-500" />
+          <StatCard title="Reportes" value={reports.length.toString()} icon={<AlertCircle className="w-5 h-5" />} color="bg-orange-500" />
+        </div>
+      )}
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+        <div className="bg-white rounded-3xl p-6 border border-gray-100 shadow-xl shadow-gray-100/50 space-y-6">
+          <h2 className="text-xl font-black text-gray-900 uppercase tracking-tighter flex items-center gap-2">
+            Anuncio Global <Megaphone className="w-5 h-5 text-accent" />
+          </h2>
+          <textarea 
+            value={announcement}
+            onChange={(e) => setAnnouncement(e.target.value)}
+            placeholder="Escribe un mensaje para todos los usuarios..."
+            className="w-full h-32 p-4 bg-gray-50 border-none rounded-2xl focus:ring-2 focus:ring-accent transition-all text-sm font-medium resize-none"
+          />
+          <button 
+            onClick={sendAnnouncement}
+            disabled={sending || !announcement.trim()}
+            className="w-full py-4 bg-accent text-white rounded-2xl font-black uppercase tracking-widest hover:bg-accent-dark transition-all disabled:opacity-50 disabled:scale-100 active:scale-95 shadow-xl shadow-accent/20 flex items-center justify-center gap-2"
+          >
+            {sending ? <RefreshCw className="w-5 h-5 animate-spin" /> : <Send className="w-5 h-5" />}
+            Enviar a todos
+          </button>
+        </div>
+
+        <div className="bg-white rounded-3xl p-6 border border-gray-100 shadow-xl shadow-gray-100/50 space-y-6 overflow-hidden">
+          <h2 className="text-xl font-black text-gray-900 uppercase tracking-tighter flex items-center gap-2">
+            Reportes Técnicos <Bug className="w-5 h-5 text-orange-500" />
+          </h2>
+          <div className="space-y-4 max-h-[400px] overflow-y-auto pr-2 custom-scrollbar">
+            {reports.length === 0 ? (
+              <p className="text-center py-10 text-gray-400 font-medium">No hay reportes pendientes.</p>
+            ) : (
+              reports.map((report: any) => (
+                <div key={report.id} className="p-4 bg-gray-50 rounded-2xl space-y-2 border border-gray-100">
+                  <div className="flex justify-between items-start">
+                    <span className="text-[10px] font-black uppercase tracking-widest text-accent bg-accent/10 px-2 py-1 rounded-lg">
+                      {report.status}
+                    </span>
+                    <span className="text-[10px] text-gray-400 font-bold">
+                      {report.timestamp?.toDate ? report.timestamp.toDate().toLocaleString() : 'Reciente'}
+                    </span>
+                  </div>
+                  <p className="text-sm text-gray-700 font-medium leading-tight">{report.message}</p>
+                  <p className="text-xs text-gray-400 font-bold">De: {report.userName} ({report.userEmail})</p>
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function StatCard({ title, value, icon, color }: { title: string, value: string, icon: React.ReactNode, color: string }) {
+  return (
+    <div className="bg-white p-6 rounded-3xl border border-gray-100 shadow-xl shadow-gray-100/50 flex items-center gap-4 group hover:border-accent transition-all duration-300">
+      <div className={cn("p-4 rounded-2xl text-white shadow-lg", color)}>
+        {icon}
+      </div>
+      <div>
+        <p className="text-[10px] font-black text-gray-400 uppercase tracking-widest">{title}</p>
+        <p className="text-2xl font-black text-gray-900 tracking-tighter">{value}</p>
       </div>
     </div>
   );

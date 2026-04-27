@@ -15,7 +15,8 @@ service cloud.firestore {
 
     // 1. Users
     match /users/{userId} {
-      allow get: if isSignedIn() && request.auth.uid == userId;
+      allow get: if isSignedIn() && (request.auth.uid == userId || isAdmin());
+      allow list: if isAdmin();
       allow create: if isSignedIn() && request.auth.uid == userId && isValidUser(incoming());
       allow update: if isSignedIn() && request.auth.uid == userId && isValidUser(incoming())
                     && incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'photoURL', 'favoriteItems', 'familyId']);
@@ -29,11 +30,12 @@ service cloud.firestore {
 
     // 2. Lists
     match /lists/{listId} {
-      allow read: if isSignedIn() && existing().familyId == getUserFamilyId();
+      allow read: if isSignedIn() && (existing().familyId == getUserFamilyId() || isAdmin());
+      allow list: if isAdmin();
       allow create: if isSignedIn() && incoming().familyId == getUserFamilyId() && isValidList(incoming());
-      allow update: if isSignedIn() && existing().familyId == getUserFamilyId() && isValidList(incoming())
-                    && incoming().familyId == existing().familyId;
-      allow delete: if isSignedIn() && existing().familyId == getUserFamilyId();
+      allow update: if isSignedIn() && (existing().familyId == getUserFamilyId() || isAdmin()) && isValidList(incoming())
+                    && (isAdmin() || incoming().familyId == existing().familyId);
+      allow delete: if isSignedIn() && (existing().familyId == getUserFamilyId() || isAdmin());
 
       function isValidList(data) {
         return data.name is string && data.name.size() <= 100
@@ -43,17 +45,23 @@ service cloud.firestore {
 
     // 3. Items
     match /items/{itemId} {
-      allow read: if isSignedIn() && resource.data.familyId == getUserFamilyId();
+      allow read: if isSignedIn() && (resource.data.familyId == getUserFamilyId() || isAdmin());
+      allow list: if isAdmin();
       allow create: if isSignedIn() && incoming().familyId == getUserFamilyId() && isValidItem(incoming());
-      allow update: if isSignedIn() && existing().familyId == getUserFamilyId() && isValidItem(incoming())
-                    && incoming().familyId == existing().familyId;
-      allow delete: if isSignedIn() && existing().familyId == getUserFamilyId();
+      allow update: if isSignedIn() && (existing().familyId == getUserFamilyId() || isAdmin()) && isValidItem(incoming())
+                    && (isAdmin() || incoming().familyId == existing().familyId);
+      allow delete: if isSignedIn() && (existing().familyId == getUserFamilyId() || isAdmin());
 
       function isValidItem(data) {
         return data.name is string && data.name.size() <= 100
           && data.familyId is string && data.familyId.size() <= 50
           && data.listId is string && data.listId.size() <= 50;
       }
+    }
+
+    // Admins helper
+    match /admins/{adminId} {
+      allow read: if isSignedIn() && (request.auth.uid == adminId || isAdmin());
     }
 
     // 4. Activities
