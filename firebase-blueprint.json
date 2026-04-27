@@ -47,7 +47,9 @@
         "familyId": { "type": "string" },
         "listId": { "type": "string" },
         "timestamp": { "type": "string" },
-        "totalItems": { "type": "number" }
+        "totalItems": { "type": "number" },
+        "totalCost": { "type": "number" },
+        "storeName": { "type": "string" }
       },
       "required": ["items", "familyId", "timestamp"]
     }

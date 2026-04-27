@@ -4,6 +4,7 @@
  */
 
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
+import { GoogleGenAI, Type } from "@google/genai";
 import { 
   onAuthStateChanged, 
   signInWithPopup, 
@@ -32,7 +33,8 @@ import {
   orderBy,
   limit,
   serverTimestamp,
-  writeBatch
+  writeBatch,
+  getDocs
 } from 'firebase/firestore';
 import { 
   Plus, 
@@ -90,7 +92,13 @@ import {
   Beef,
   Cookie,
   Flame,
-  ChefHat
+  ChefHat,
+  TrendingUp,
+  Camera,
+  BarChart2,
+  PieChart,
+  Calendar,
+  ShoppingBag as ShoppingBagIcon
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { analyzeItem, getSmartRecommendations, parseVoiceInput, ItemInfo, ParsedVoiceItem } from './lib/gemini';
@@ -136,6 +144,8 @@ const copyToClipboard = async (text: string) => {
   }
 };
 
+const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || '' });
+
 const COMMON_CATEGORIES = [
   'Frutas y Verduras',
   'Lácteos y Huevos',
@@ -151,6 +161,58 @@ const COMMON_CATEGORIES = [
   'Hogar',
   'Otros'
 ];
+
+const fileToGenerativePart = async (file: File) => {
+  const base64EncodedDataPromise = new Promise((resolve) => {
+    const reader = new FileReader();
+    reader.onloadend = () => resolve((reader.result as string).split(',')[1]);
+    reader.readAsDataURL(file);
+  });
+  return {
+    inlineData: { data: await base64EncodedDataPromise as string, mimeType: file.type },
+  };
+};
+
+const processReceipt = async (imageFile: File) => {
+  try {
+    const imagePart = await fileToGenerativePart(imageFile);
+    const prompt = "Analiza la boleta chilena adjunta. Extrae el MONTO TOTAL, la FECHA, el NOMBRE DEL COMERCIO y la LISTA DE PRODUCTOS detallada. Para cada producto extrae el nombre, la cantidad y el precio unitario. Responde estrictamente en JSON: {'total': number, 'comercio': 'string', 'fecha': 'ISOString', 'items': [{'nombre': 'string', 'cantidad': number, 'precio': number}], 'error': null}. Si no es una boleta, responde {'error': 'invalido'}.";
+
+    const response = await ai.models.generateContent({
+      model: "gemini-1.5-flash",
+      contents: { parts: [{ text: prompt }, imagePart] },
+      config: {
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            total: { type: Type.NUMBER },
+            comercio: { type: Type.STRING },
+            fecha: { type: Type.STRING },
+            items: { 
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  nombre: { type: Type.STRING },
+                  cantidad: { type: Type.NUMBER },
+                  precio: { type: Type.NUMBER }
+                }
+              }
+            },
+            error: { type: Type.STRING, nullable: true }
+          }
+        }
+      }
+    });
+    
+    const text = response.text || "{}";
+    return JSON.parse(text);
+  } catch (error) {
+    console.error("Receipt Processing Error:", error);
+    return { error: 'fallo_procesamiento' };
+  }
+};
 
 // --- Types ---
 interface GroceryItem {
@@ -497,9 +559,71 @@ export default function App() {
   const [searchQuery, setSearchQuery] = useState('');
   const [lists, setLists] = useState<ShoppingList[]>([]);
   const [activeListId, setActiveListId] = useState<string | null>(null);
-  const [currentView, setCurrentView] = useState<'list' | 'stores'>('list');
+  const [currentView, setCurrentView] = useState<'list' | 'stores' | 'pantry' | 'history' | 'stats'>('list');
   const [activities, setActivities] = useState<ActivityItem[]>([]);
   const [syncedUsers, setSyncedUsers] = useState<UserProfile[]>([]);
+  const [history, setHistory] = useState<any[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(true);
+  const [isScanning, setIsScanning] = useState(false);
+  const [scanningTargetId, setScanningTargetId] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const handleScanReceipt = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file || !profile?.familyId) return;
+
+    setIsScanning(true);
+    try {
+      const data = await processReceipt(file);
+      
+      if (data.error) {
+        addNotification("No se pudo leer la boleta. Intenta manualmente.", "error");
+      } else {
+        const scannedItems = (data.items || []).map((item: any) => ({
+          name: item.nombre,
+          quantity: item.cantidad?.toString() || "1",
+          price: item.precio || 0,
+          scanned: true
+        }));
+
+        if (scanningTargetId) {
+          // Actualizamos una compra existente
+          const targetEntry = history.find(h => h.id === scanningTargetId);
+          const originalItems = targetEntry?.items || [];
+          
+          // Unimos items de la lista original con los escaneados (evitando duplicados por nombre si es posible)
+          // Pero lo más limpio es guardar los detalles de la boleta
+          await updateDoc(doc(db, 'history', scanningTargetId), {
+            totalCost: data.total || 0,
+            storeName: data.comercio || 'Comercio desconocido',
+            items: scannedItems.length > 0 ? scannedItems : originalItems,
+            totalItems: scannedItems.length > 0 ? scannedItems.length : originalItems.length,
+            isScanning: true
+          });
+          addNotification("¡Boleta vinculada y productos actualizados!", "success");
+        } else {
+          // Creamos una nueva entrada (gasto libre)
+          await addDoc(historyCollection, {
+            familyId: profile.familyId,
+            totalCost: data.total || 0,
+            storeName: data.comercio || 'Comercio desconocido',
+            timestamp: data.fecha ? new Date(data.fecha) : serverTimestamp(),
+            items: scannedItems, 
+            totalItems: scannedItems.length,
+            isScanning: true
+          });
+          addNotification("¡Boleta guardada con " + scannedItems.length + " productos!", "success");
+        }
+      }
+    } catch (err) {
+      console.error(err);
+      addNotification("Error al procesar boleta", "error");
+    } finally {
+      setIsScanning(false);
+      setScanningTargetId(null);
+      if (fileInputRef.current) fileInputRef.current.value = '';
+    }
+  };
   const [recommendations, setRecommendations] = useState<string[]>([]);
   const [isAdding, setIsAdding] = useState(false);
   const [showCategories, setShowCategories] = useState(false);
@@ -858,6 +982,33 @@ export default function App() {
     });
   }, [profile?.familyId]);
 
+  // Sync History
+  useEffect(() => {
+    if (!profile?.familyId || !historyCollection) return;
+    const q = query(
+      historyCollection, 
+      where('familyId', '==', profile.familyId)
+    );
+
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const data = snapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data()
+      })).sort((a: any, b: any) => {
+        const timeA = a.timestamp?.toMillis ? a.timestamp.toMillis() : (a.timestamp ? new Date(a.timestamp).getTime() : 0);
+        const timeB = b.timestamp?.toMillis ? b.timestamp.toMillis() : (b.timestamp ? new Date(b.timestamp).getTime() : 0);
+        return timeB - timeA;
+      }).slice(0, 20);
+      setHistory(data);
+      setHistoryLoading(false);
+    }, (error) => {
+      console.error("History Error:", error);
+      setHistoryLoading(false);
+    });
+
+    return () => unsubscribe();
+  }, [profile?.familyId]);
+
   // AI Recommendations
   const [isFetchingRecs, setIsFetchingRecs] = useState(false);
   const fetchRecommendations = async () => {
@@ -1048,6 +1199,8 @@ export default function App() {
     );
 
     if (isDuplicate) {
+      if (silent) return; // Skip duplicates silently during batch operations (like repeating purchase)
+      
       setPromptConfig({
         isOpen: true,
         type: 'confirm',
@@ -1142,7 +1295,13 @@ export default function App() {
       batch.set(historyEntryRef, {
         familyId: profile.familyId,
         listId: activeListId,
-        items: checkedItems.map(i => ({ name: i.name, quantity: i.quantity, category: i.category })),
+        listName: lists.find(l => l.id === activeListId)?.name || 'Lista',
+        items: checkedItems.map(i => ({ 
+          name: i.name, 
+          quantity: i.quantity, 
+          category: i.category,
+          checkedAt: serverTimestamp()
+        })),
         totalItems: checkedItems.length,
         timestamp: serverTimestamp()
       });
@@ -1169,8 +1328,103 @@ export default function App() {
     }
   };
 
+  const [suggestions, setSuggestions] = useState<{name: string, reason: string}[]>([]);
+  const [loadingSuggestions, setLoadingSuggestions] = useState(false);
+
+  const fetchSuggestions = async () => {
+    if (!profile || historyCollection === null) return;
+    setLoadingSuggestions(true);
+    try {
+      const q = query(historyCollection, where('familyId', '==', profile.familyId), limit(50));
+      const snap = await getDocs(q);
+      const historyData = snap.docs
+        .map(doc => ({
+           id: doc.id,
+           ...doc.data() as any
+        }))
+        .sort((a, b) => {
+          const tA = a.timestamp?.toMillis ? a.timestamp.toMillis() : (a.timestamp ? new Date(a.timestamp).getTime() : 0);
+          const tB = b.timestamp?.toMillis ? b.timestamp.toMillis() : (b.timestamp ? new Date(b.timestamp).getTime() : 0);
+          return tB - tA;
+        })
+        .slice(0, 15)
+        .map(data => ({
+          items: data.items?.map((i: any) => i.name),
+          date: data.timestamp?.toDate ? data.timestamp.toDate().toLocaleDateString() : 'N/A'
+        }));
+
+      if (historyData.length === 0) {
+        setSuggestions([]);
+        return;
+      }
+
+      const response = await ai.models.generateContent({
+        model: "gemini-3-flash-preview",
+        contents: `Fecha actual: ${new Date().toLocaleDateString('es-CL')}.
+        Historial de compras: ${JSON.stringify(historyData)}. 
+        Analiza patrones de frecuencia y cantidades exactas. 
+        Calcula cada cuántos días suelen comprar los productos principales y en qué cantidad (ej: si compran 4 yogures a la vez).
+        Identifica 5 productos prioritarios que probablemente faltan en la despensa o se están por acabar basándote en la fecha de hoy.
+        Responde en JSON con una lista de sugerencias.
+        Cada sugerencia debe tener:
+        - name: Nombre del producto.
+        - reason: Razón detallada con datos (ej: "Sueles comprar 4 yogures cada 7 días. Han pasado 8 días.").
+        - type: "frequency" | "quantity" | "missing"
+        - confidence: 0-100`,
+        config: {
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              suggestions: {
+                type: Type.ARRAY,
+                items: {
+                  type: Type.OBJECT,
+                  properties: {
+                    name: { type: Type.STRING },
+                    reason: { type: Type.STRING },
+                    type: { type: Type.STRING },
+                    confidence: { type: Type.NUMBER }
+                  },
+                  required: ["name", "reason"]
+                }
+              }
+            },
+            required: ["suggestions"]
+          }
+        }
+      });
+
+      const result = JSON.parse(response.text);
+      setSuggestions(result.suggestions || []);
+    } catch (e) {
+      console.error("Gemini Error:", e);
+    } finally {
+      setLoadingSuggestions(false);
+    }
+  };
+
+  useEffect(() => {
+    if (profile) {
+      fetchSuggestions();
+    }
+  }, [profile?.familyId]);
+
+  const addSuggestion = async (name: string) => {
+    await addItem(name);
+    setSuggestions(prev => prev.filter(s => s.name !== name));
+    addNotification(`Sugerencia aceptada: ${name}`, 'success');
+  };
+
   const handlePantryToggle = async (name: string) => {
-    if (!activeListId || !profile) {
+    let listId = activeListId;
+    
+    if (!listId && lists.length > 0) {
+      listId = lists[0].id;
+      setActiveListId(listId);
+    }
+
+    if (!listId || !profile) {
       addNotification("Selecciona una lista primero", 'info');
       return;
     }
@@ -1191,8 +1445,8 @@ export default function App() {
         addNotification("Error al actualizar", 'error');
       }
     } else {
-      // Agregar nuevo
-      await addItem(name);
+      // Agregar nuevo con listId explícito si acabamos de setearlo
+      await addItem(name, '1', listId);
       addNotification(`${name} agregado a la lista`, 'success');
     }
   };
@@ -1461,6 +1715,16 @@ export default function App() {
                     </div>
                   </div>
                 ))}
+                <button 
+                  onClick={() => { setCurrentView('history'); setIsSidebarOpen(false); }}
+                  className={cn(
+                    "w-full flex items-center gap-3 px-3 py-2.5 rounded-xl transition-all",
+                    currentView === 'history' ? "bg-accent text-white shadow-md shadow-accent/20" : "hover:bg-gray-50 text-text-secondary"
+                  )}
+                >
+                  <History className="w-4 h-4" />
+                  <span className="text-sm font-semibold">Historial de Compras</span>
+                </button>
               </div>
             </div>
 
@@ -1481,7 +1745,7 @@ export default function App() {
                   <span className="text-sm font-semibold">Supermercados</span>
                 </button>
                 <button 
-                  onClick={() => { setCurrentView('pantry'); setActiveListId(null); setIsSidebarOpen(false); }}
+                  onClick={() => { setCurrentView('pantry'); setIsSidebarOpen(false); }}
                   className={cn(
                     "w-full flex items-center gap-3 px-3 py-2.5 rounded-xl transition-all",
                     currentView === 'pantry' ? "bg-accent text-white shadow-md shadow-accent/20" : "hover:bg-gray-50 text-text-secondary"
@@ -1489,6 +1753,16 @@ export default function App() {
                 >
                   <ShoppingBasket className="w-4 h-4" />
                   <span className="text-sm font-semibold">Modo Despensa</span>
+                </button>
+                <button 
+                  onClick={() => { setCurrentView('stats'); setIsSidebarOpen(false); }}
+                  className={cn(
+                    "w-full flex items-center gap-3 px-3 py-2.5 rounded-xl transition-all",
+                    currentView === 'stats' ? "bg-accent text-white shadow-md shadow-accent/20" : "hover:bg-gray-50 text-text-secondary"
+                  )}
+                >
+                  <BarChart2 className="w-4 h-4" />
+                  <span className="text-sm font-semibold">Estadísticas</span>
                 </button>
               </div>
             </div>
@@ -1562,9 +1836,75 @@ export default function App() {
               onOpenMenu={() => setIsSidebarOpen(true)}
               activeItems={items}
               onToggleItem={(name) => handlePantryToggle(name)}
+              history={history}
+              suggestions={suggestions}
+              onAddItem={addItem}
+            />
+          ) : currentView === 'stats' ? (
+            <StatsDashboard 
+              onOpenMenu={() => setIsSidebarOpen(true)}
+              history={history}
+            />
+          ) : currentView === 'history' ? (
+            <PurchaseHistoryView 
+              onOpenMenu={() => setIsSidebarOpen(true)}
+              profile={profile}
+              currentItems={items}
+              onAddItem={(name) => addItem(name)}
+              onRepeatPurchase={async (items) => {
+                for (const item of items) {
+                  await addItem(item.name, item.quantity);
+                }
+                setCurrentView('list');
+                addNotification("¡Todo agregado a la lista!", 'success');
+              }}
+              history={history}
+              loading={historyLoading}
+              onScanClick={(id) => {
+                setScanningTargetId(id || null);
+                fileInputRef.current?.click();
+              }}
+              isScanning={isScanning}
+              scanningTargetId={scanningTargetId}
             />
           ) : (
             <>
+              {/* AI Suggestions Chips */}
+              <AnimatePresence>
+                {suggestions.length > 0 && currentView === 'list' && (
+                  <motion.div 
+                    initial={{ opacity: 0, y: -20 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    className="px-4 py-3 flex gap-2 overflow-x-auto scrollbar-hide bg-gradient-to-r from-accent/5 to-transparent border-b border-accent/10"
+                  >
+                    <div className="flex items-center gap-2 shrink-0 mr-2">
+                       <div className="w-8 h-8 bg-accent rounded-full flex items-center justify-center shadow-lg shadow-accent/20">
+                         <Sparkles className="w-4 h-4 text-white" />
+                       </div>
+                       <span className="text-[10px] font-black uppercase tracking-widest text-accent">IA:</span>
+                    </div>
+                    {suggestions.map((s, i) => (
+                      <motion.button
+                        key={s.name}
+                        initial={{ opacity: 0, x: 20 }}
+                        animate={{ opacity: 1, x: 0 }}
+                        transition={{ delay: i * 0.1 }}
+                        onClick={() => addSuggestion(s.name)}
+                        className="shrink-0 flex flex-col items-start gap-0.5 px-4 py-2 bg-white border border-accent/20 rounded-2xl shadow-soft hover:border-accent transition-all active:scale-95 group max-w-[200px]"
+                      >
+                        <span className="text-xs font-black text-text-main group-hover:text-accent flex items-center justify-between w-full gap-2">
+                          <span className="truncate">{s.name}</span>
+                          <Plus className="w-3 h-3 opacity-50 shrink-0" />
+                        </span>
+                        <span className="text-[9px] text-text-secondary font-medium leading-[1.2] line-clamp-2 text-left">
+                          {s.reason}
+                        </span>
+                      </motion.button>
+                    ))}
+                  </motion.div>
+                )}
+              </AnimatePresence>
+
               {/* Header & Search Persistent - Sticky on Mobile */}
               <div className={cn(
                 "sticky top-0 z-[100] transition-all duration-300 lg:static lg:bg-transparent lg:backdrop-blur-none lg:p-0 lg:mx-0 lg:border-none",
@@ -3041,14 +3381,46 @@ const PANTRY_ESSENTIALS = [
   { name: 'Snacks', icon: '🥨', lucide: 'Flame', color: 'bg-orange-50', text: 'text-orange-600', span: 'col-span-1 row-span-1' },
 ];
 
-function PantryView({ onOpenMenu, activeItems, onToggleItem }: { 
+function PantryView({ onOpenMenu, activeItems, onToggleItem, history = [], suggestions, onAddItem }: { 
   onOpenMenu: () => void, 
   activeItems: any[],
-  onToggleItem: (name: string) => void
+  onToggleItem: (name: string) => void,
+  history: any[],
+  suggestions: any[],
+  onAddItem: (name: string) => void
 }) {
   const IconMap: any = {
     Milk, Coffee, Egg, Droplet, Sparkles, Package, Box, Apple, StickyNote, Beef, Cookie, Flame
   };
+
+  // Calcular items frecuentes del historial que no están ya en PANTRY_ESSENTIALS
+  const frequentItems = useMemo(() => {
+    if (!Array.isArray(history)) return [];
+    const counts: Record<string, number> = {};
+    history.forEach(entry => {
+      entry.items?.forEach((item: any) => {
+        const name = item.name.charAt(0).toUpperCase() + item.name.slice(1).toLowerCase();
+        // Solo agregar si no está en la lista estática
+        if (!PANTRY_ESSENTIALS.find(p => p.name.toLowerCase() === name.toLowerCase())) {
+          counts[name] = (counts[name] || 0) + 1;
+        }
+      });
+    });
+
+    return Object.entries(counts)
+      .sort(([, a], [, b]) => b - a)
+      .slice(0, 10) // Mostrar hasta 10 items frecuentes extra
+      .map(([name]) => ({
+        name,
+        icon: '✨',
+        lucide: 'Sparkles',
+        color: 'bg-emerald-50',
+        text: 'text-emerald-600',
+        span: 'col-span-1 row-span-1'
+      }));
+  }, [history]);
+
+  const allPantryItems = [...PANTRY_ESSENTIALS, ...frequentItems];
 
   return (
     <div className="p-4 md:p-8 lg:p-12 space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500">
@@ -3075,11 +3447,50 @@ function PantryView({ onOpenMenu, activeItems, onToggleItem }: {
           </div>
         </div>
 
+        {/* Predictive Insights Section - More compact version */}
+        {suggestions.length > 0 && (
+          <div className="flex flex-col gap-4">
+            <div className="flex items-center gap-2">
+              <Sparkles className="w-4 h-4 text-accent" />
+              <h3 className="text-[10px] font-black uppercase tracking-widest text-accent">Análisis Predictivo</h3>
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+              {suggestions.slice(0, 3).map((s, idx) => (
+                <motion.div
+                  key={idx}
+                  initial={{ opacity: 0, scale: 0.95 }}
+                  animate={{ opacity: 1, scale: 1 }}
+                  transition={{ delay: idx * 0.05 }}
+                  className="bg-white border border-border rounded-2xl p-4 flex items-center gap-4 hover:border-accent transition-all group relative overflow-hidden"
+                >
+                  <div className="w-10 h-10 rounded-xl bg-accent/10 flex items-center justify-center shrink-0">
+                    <TrendingUp className="w-5 h-5 text-accent" />
+                  </div>
+                  
+                  <div className="flex-1 min-w-0 py-1">
+                    <h4 className="text-sm font-black text-text-main leading-tight mb-0.5 truncate">{s.name}</h4>
+                    <p className="text-[11px] font-medium text-text-secondary leading-[1.3] line-clamp-2">
+                      {s.reason}
+                    </p>
+                  </div>
+                  
+                  <button
+                    onClick={() => onAddItem(s.name)}
+                    className="w-10 h-10 rounded-xl bg-accent text-white flex items-center justify-center hover:bg-accent-dark transition-colors shrink-0 shadow-lg shadow-accent/20 active:scale-90"
+                  >
+                    <Plus className="w-5 h-5" />
+                  </button>
+                </motion.div>
+              ))}
+            </div>
+          </div>
+        )}
+
         <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 auto-rows-[100px] md:auto-rows-[120px] gap-3 h-full">
-          {PANTRY_ESSENTIALS.map((item, i) => {
+          {allPantryItems.map((item, i) => {
             const Icon = IconMap[item.lucide] || Package;
-            const isInList = activeItems.some(ai => ai.name.toLowerCase() === item.name.toLowerCase());
-            const currentQty = activeItems.find(ai => ai.name.toLowerCase() === item.name.toLowerCase())?.quantity || null;
+            const isInList = activeItems.some(ai => ai.name.toLowerCase() === item.name.toLowerCase() && !ai.checked);
+            const currentQty = activeItems.find(ai => ai.name.toLowerCase() === item.name.toLowerCase() && !ai.checked)?.quantity || null;
 
             return (
               <motion.button
@@ -3143,6 +3554,343 @@ function PantryView({ onOpenMenu, activeItems, onToggleItem }: {
           El <strong>Modo Despensa</strong> muestra los productos que compras con más frecuencia. 
           Tocarlos los agrega directamente a tu lista activa con su categoría automática.
         </p>
+      </div>
+    </div>
+  );
+}
+
+function StatsDashboard({ onOpenMenu, history }: { onOpenMenu: () => void, history: any[] }) {
+  const stats = useMemo(() => {
+    const now = new Date();
+    const currentMonth = now.getMonth();
+    const currentYear = now.getFullYear();
+    const prevMonth = currentMonth === 0 ? 11 : currentMonth - 1;
+    const prevYear = currentMonth === 0 ? currentYear - 1 : currentYear;
+
+    let totalThisMonth = 0;
+    let totalLastMonth = 0;
+    const counts: Record<string, number> = {};
+    let storeCounts: Record<string, number> = { 'Supermercado': 0, 'Feria': 0 };
+
+    history.forEach(entry => {
+      const date = entry.timestamp?.toDate ? entry.timestamp.toDate() : (entry.timestamp ? new Date(entry.timestamp) : new Date());
+      const cost = entry.totalCost || 0;
+
+      if (date.getMonth() === currentMonth && date.getFullYear() === currentYear) {
+        totalThisMonth += cost;
+      } else if (date.getMonth() === prevMonth && date.getFullYear() === prevYear) {
+        totalLastMonth += cost;
+      }
+
+      // Items
+      entry.items?.forEach((item: any) => {
+        const name = typeof item === 'string' ? item : item.name;
+        if (name) counts[name] = (counts[name] || 0) + 1;
+      });
+
+      // Stores
+      if (entry.storeName) {
+        const store = entry.storeName.includes('Feria') ? 'Feria' : 'Supermercado';
+        storeCounts[store] = (storeCounts[store] || 0) + 1;
+      }
+    });
+
+    const starProduct = Object.entries(counts).sort((a, b) => b[1] - a[1])[0]?.[0] || 'N/A';
+    const percentChange = totalLastMonth === 0 ? 100 : Math.round(((totalThisMonth - totalLastMonth) / totalLastMonth) * 100);
+
+    return {
+      totalThisMonth,
+      totalLastMonth,
+      percentChange,
+      starProduct,
+      storeCounts
+    };
+  }, [history]);
+
+  return (
+    <div className="p-4 md:p-8 lg:p-12 space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500">
+      <div className="flex items-center gap-3">
+        <button onClick={onOpenMenu} className="lg:hidden p-2.5 bg-white border border-border rounded-xl">
+          <Menu className="w-5 h-5 text-text-main" />
+        </button>
+        <div className="flex items-center gap-2">
+          <div className="w-10 h-10 bg-accent/10 rounded-xl grid place-items-center">
+            <BarChart2 className="w-5 h-5 text-accent" />
+          </div>
+          <div>
+            <h2 className="text-2xl font-black tracking-tighter text-text-main">Estadísticas</h2>
+            <p className="text-[10px] text-text-secondary font-medium uppercase tracking-widest">Insights de consumo</p>
+          </div>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+        {/* Total Month Card */}
+        <div className="bg-white border border-border p-6 rounded-[2rem] shadow-sm flex flex-col justify-between group hover:border-accent transition-all">
+          <div className="flex items-center justify-between mb-4">
+            <div className="w-10 h-10 bg-blue-50 rounded-xl flex items-center justify-center">
+              <TrendingUp className="w-5 h-5 text-blue-500" />
+            </div>
+            <div className={cn(
+              "px-3 py-1 rounded-full text-[10px] font-black uppercase",
+              stats.percentChange >= 0 ? "bg-red-50 text-red-500" : "bg-green-50 text-green-500"
+            )}>
+              {stats.percentChange >= 0 ? '+' : ''}{stats.percentChange}% vs mes ant.
+            </div>
+          </div>
+          <div className="space-y-1">
+            <p className="text-[10px] font-black text-text-secondary uppercase tracking-widest">Gasto Mensual</p>
+            <h3 className="text-3xl font-black text-text-main">${stats.totalThisMonth?.toLocaleString('es-CL')}</h3>
+          </div>
+        </div>
+
+        {/* Store Frequency Card */}
+        <div className="bg-white border border-border p-6 rounded-[2rem] shadow-sm flex flex-col justify-between group hover:border-accent transition-all">
+          <div className="flex items-center justify-between mb-4">
+            <div className="w-10 h-10 bg-purple-50 rounded-xl flex items-center justify-center">
+              <Compass className="w-5 h-5 text-purple-500" />
+            </div>
+            <span className="text-[10px] font-black text-text-secondary uppercase">Preferencias</span>
+          </div>
+          <div className="space-y-4">
+            <div className="space-y-2">
+              <div className="flex justify-between text-[10px] font-black uppercase">
+                <span>Supermercado</span>
+                <span>{stats.storeCounts['Supermercado']} visitas</span>
+              </div>
+              <div className="h-2 bg-gray-100 rounded-full overflow-hidden">
+                <div 
+                  className="h-full bg-accent" 
+                  style={{ width: `${(stats.storeCounts['Supermercado'] / (stats.storeCounts['Supermercado'] + stats.storeCounts['Feria'] || 1)) * 100}%` }}
+                />
+              </div>
+            </div>
+            <div className="space-y-2">
+              <div className="flex justify-between text-[10px] font-black uppercase">
+                <span>Feria</span>
+                <span>{stats.storeCounts['Feria']} visitas</span>
+              </div>
+              <div className="h-2 bg-gray-100 rounded-full overflow-hidden">
+                <div 
+                  className="h-full bg-orange-400" 
+                  style={{ width: `${(stats.storeCounts['Feria'] / (stats.storeCounts['Supermercado'] + stats.storeCounts['Feria'] || 1)) * 100}%` }}
+                />
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Star Product Card */}
+        <div className="bg-white border border-border p-6 rounded-[2rem] shadow-sm flex flex-col justify-between group hover:border-accent transition-all">
+          <div className="flex items-center justify-between mb-4">
+            <div className="w-10 h-10 bg-yellow-50 rounded-xl flex items-center justify-center">
+              <Star className="w-5 h-5 text-yellow-500 fill-yellow-500" />
+            </div>
+            <span className="text-[10px] font-black text-text-secondary uppercase">Más comprado</span>
+          </div>
+          <div className="space-y-1">
+            <p className="text-[10px] font-black text-text-secondary uppercase tracking-widest">Producto Estrella</p>
+            <h3 className="text-2xl font-black text-text-main truncate group-hover:text-accent transition-colors">{stats.starProduct}</h3>
+          </div>
+        </div>
+      </div>
+
+      <div className="bg-accent/5 border border-accent/10 p-8 rounded-[2.5rem] flex flex-col md:flex-row items-center gap-6">
+        <div className="w-16 h-16 bg-accent rounded-2xl flex items-center justify-center shrink-0 shadow-lg shadow-accent/20">
+          <Sparkles className="w-8 h-8 text-white" />
+        </div>
+        <div className="flex-1 text-center md:text-left">
+          <h3 className="text-lg font-black text-text-main mb-1">Optimizando tu presupuesto</h3>
+          <p className="text-xs text-text-secondary font-medium leading-relaxed">
+            Basado en tu historial, estás gastando un {Math.abs(stats.percentChange)}% {stats.percentChange > 0 ? 'más' : 'menos'} que el mes pasado. 
+            Recuerda usar el <strong>Modo Despensa</strong> para planificar y evitar compras compulsivas.
+          </p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function PurchaseHistoryView({ onOpenMenu, profile, onAddItem, onRepeatPurchase, currentItems, history, loading, onScanClick, isScanning, scanningTargetId }: { 
+  onOpenMenu: () => void, 
+  profile: UserProfile,
+  currentItems: GroceryItem[],
+  onAddItem: (name: string) => void,
+  onRepeatPurchase: (items: any[]) => void,
+  history: any[],
+  loading: boolean,
+  onScanClick: (id?: string) => void,
+  isScanning: boolean,
+  scanningTargetId: string | null
+}) {
+  // Helper to check if an item is already in the current list
+  const isItemInList = (name: string) => {
+    return currentItems.some(i => i.name.toLowerCase() === name.toLowerCase() && !i.checked);
+  };
+
+  return (
+    <div className="p-4 md:p-8 lg:p-12 space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500">
+      <div className="flex flex-col gap-6">
+        <div className="flex items-center">
+          <div className="flex items-center gap-3">
+            <button 
+              onClick={onOpenMenu}
+              className="lg:hidden p-2.5 bg-white border border-border rounded-xl shadow-sm active:scale-95 transition-all"
+            >
+              <Menu className="w-5 h-5 text-text-main" />
+            </button>
+            <div className="flex flex-col gap-1">
+              <div className="flex items-center gap-2">
+                <div className="w-10 h-10 bg-accent/10 rounded-xl grid place-items-center sm:w-12 sm:h-12">
+                  <History className="w-5 h-5 text-accent sm:w-6 sm:h-6" />
+                </div>
+                <div>
+                  <h2 className="text-2xl sm:text-3xl font-black tracking-tighter text-text-main leading-tight">Historial</h2>
+                  <p className="text-[10px] sm:text-xs text-text-secondary font-medium italic">Tus últimas compras finalizadas</p>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {loading ? (
+          <div className="flex flex-col items-center justify-center py-20 gap-4">
+            <RefreshCw className="w-8 h-8 text-accent animate-spin" />
+            <p className="text-sm font-bold text-text-secondary uppercase tracking-widest">Cargando historial...</p>
+          </div>
+        ) : history.length === 0 ? (
+          <div className="flex flex-col items-center justify-center py-20 gap-6 text-center max-w-sm mx-auto">
+            <div className="w-20 h-20 bg-gray-50 rounded-full flex items-center justify-center">
+              <ShoppingBag className="w-10 h-10 text-gray-300" />
+            </div>
+            <div className="space-y-2">
+              <h3 className="text-xl font-black text-text-main">No hay compras aún</h3>
+              <p className="text-sm text-text-secondary font-medium leading-relaxed">
+                Cuando finalices una compra usando el botón de la lista, aparecerán aquí para que lleves un registro.
+              </p>
+            </div>
+          </div>
+        ) : (
+          <div className="grid gap-4">
+            {history.map((entry) => {
+              const date = entry.timestamp?.toDate ? entry.timestamp.toDate() : (entry.timestamp ? new Date(entry.timestamp) : new Date());
+              const dateStr = date.toLocaleDateString('es-ES', { day: '2-digit', month: 'long', year: 'numeric' });
+              const timeStr = date.toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' });
+
+              return (
+                <motion.div 
+                  key={entry.id}
+                  initial={{ opacity: 0, y: 10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  className="bg-white border border-border rounded-3xl p-6 shadow-sm hover:shadow-md transition-all group"
+                >
+                  <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-6">
+                    <div className="flex items-center gap-4">
+                      <div className="w-12 h-12 bg-gray-50 rounded-2xl flex flex-col items-center justify-center shrink-0 border border-border group-hover:border-accent/30 transition-colors shadow-inner">
+                        <span className="text-[10px] font-black leading-none text-text-secondary uppercase opacity-70 mb-0.5">{date.toLocaleDateString('es-ES', { month: 'short' })}</span>
+                        <span className="text-lg font-black leading-none text-text-main">{date.getDate()}</span>
+                      </div>
+                      <div className="flex flex-col gap-0.5">
+                        <div className="flex items-center gap-2">
+                          <h4 className="font-bold text-text-main">{entry.storeName || dateStr}</h4>
+                          {entry.listName && (
+                            <span className="px-2 py-0.5 bg-accent/5 text-accent text-[9px] font-black uppercase rounded-md border border-accent/10">
+                              {entry.listName}
+                            </span>
+                          )}
+                        </div>
+                        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] text-text-secondary uppercase font-bold tracking-wider opacity-80">
+                          <div className="flex items-center gap-1">
+                            <Clock className="w-3 h-3" />
+                            {timeStr}
+                            {!entry.storeName && <span>• {dateStr}</span>}
+                          </div>
+                          {entry.totalItems > 0 && <span>• {entry.totalItems} productos</span>}
+                          {entry.totalCost && (
+                            <span className="text-accent font-black">
+                              • ${entry.totalCost.toLocaleString('es-CL')}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                    
+                    <div className="flex flex-col sm:flex-row items-center gap-2">
+                      {!entry.totalCost && (
+                        <button
+                          onClick={() => onScanClick(entry.id)}
+                          disabled={isScanning}
+                          className={cn(
+                            "w-full sm:w-auto flex items-center justify-center gap-2 px-4 py-2 bg-accent/10 text-accent rounded-xl text-[10px] font-black uppercase tracking-wider hover:bg-accent hover:text-white transition-all active:scale-95",
+                            isScanning && scanningTargetId === entry.id && "animate-pulse"
+                          )}
+                        >
+                          {isScanning && scanningTargetId === entry.id ? (
+                            <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                          ) : (
+                            <Camera className="w-3.5 h-3.5" />
+                          )}
+                          Vincular Boleta
+                        </button>
+                      )}
+
+                      <button
+                        onClick={() => onRepeatPurchase(entry.items)}
+                        className="w-full sm:w-auto flex items-center justify-center gap-2 px-4 py-2 bg-accent text-white rounded-xl text-[10px] font-black uppercase tracking-wider hover:bg-accent-dark transition-all active:scale-95 shadow-md shadow-accent/10"
+                      >
+                        <RefreshCw className="w-3.5 h-3.5" />
+                        Repetir Compra
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="flex flex-wrap gap-2">
+                    {entry.items?.map((item: any, idx: number) => {
+                      const alreadyInList = isItemInList(item.name);
+                      
+                      return (
+                        <button 
+                          key={idx}
+                          onClick={() => !alreadyInList && onAddItem(item.name)}
+                          disabled={alreadyInList}
+                          className={cn(
+                            "px-3 py-1.5 border rounded-xl text-[11px] font-semibold flex items-center gap-2 transition-all group/item",
+                            alreadyInList 
+                              ? "bg-green-50 border-green-200 text-green-700 cursor-default" 
+                              : "bg-gray-50 border-border text-text-main hover:bg-white hover:border-accent/20 hover:text-accent"
+                          )}
+                        >
+                          <span className={cn(
+                            "w-1.5 h-1.5 rounded-full transition-colors",
+                            alreadyInList ? "bg-green-500" : "bg-accent/30 group-hover/item:bg-accent"
+                          )} />
+                          <span>{item.name}</span>
+                          {item.price && item.price > 0 && (
+                            <span className={cn(
+                              "font-black ml-1",
+                              alreadyInList ? "text-green-600" : "text-accent"
+                            )}>
+                              ${item.price.toLocaleString('es-CL')}
+                            </span>
+                          )}
+                          {item.quantity && item.quantity !== '1' && <span className={cn(
+                            "font-black opacity-50",
+                            alreadyInList ? "text-green-600" : "text-text-secondary"
+                          )}>x{item.quantity}</span>}
+                          {alreadyInList ? (
+                            <Check className="w-3 h-3 text-green-600 ml-1" />
+                          ) : (
+                            <Plus className="w-3 h-3 opacity-0 group-hover/item:opacity-100 transition-opacity ml-1" />
+                          )}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </motion.div>
+              );
+            })}
+          </div>
+        )}
       </div>
     </div>
   );
