@@ -1421,6 +1421,18 @@ export default function App() {
     }
   };
 
+  const handleDeleteHistoryEntry = async (entryId: string) => {
+    try {
+      if (!entryId) return;
+      await deleteDoc(doc(db, 'history', entryId));
+      addNotification("Registro eliminado del historial", 'success');
+      setPromptConfig(prev => ({ ...prev, isOpen: false }));
+    } catch (e: any) {
+      console.error(e);
+      addNotification(`Error al eliminar registro: ${e.message || e}`, 'error');
+    }
+  };
+
   const [suggestions, setSuggestions] = useState<{name: string, reason: string}[]>([]);
   const [loadingSuggestions, setLoadingSuggestions] = useState(false);
 
@@ -1979,6 +1991,15 @@ export default function App() {
               }}
               isScanning={isScanning}
               scanningTargetId={scanningTargetId}
+              onDeleteHistoryEntry={(entryId) => {
+                setPromptConfig({
+                  isOpen: true,
+                  title: '¿Eliminar del historial?',
+                  description: '¿Deseas eliminar este registro de compra de forma permanente? Esta acción no se puede deshacer.',
+                  type: 'confirm',
+                  onConfirm: () => handleDeleteHistoryEntry(entryId)
+                });
+              }}
             />
           ) : (
             <>
@@ -3875,7 +3896,7 @@ function StatsDashboard({ onOpenMenu, history }: { onOpenMenu: () => void, histo
   );
 }
 
-function PurchaseHistoryView({ onOpenMenu, profile, onAddItem, onRepeatPurchase, currentItems, history, loading, onScanClick, isScanning, scanningTargetId }: { 
+function PurchaseHistoryView({ onOpenMenu, profile, onAddItem, onRepeatPurchase, currentItems, history, loading, onScanClick, isScanning, scanningTargetId, onDeleteHistoryEntry }: { 
   onOpenMenu: () => void, 
   profile: UserProfile,
   currentItems: GroceryItem[],
@@ -3885,7 +3906,8 @@ function PurchaseHistoryView({ onOpenMenu, profile, onAddItem, onRepeatPurchase,
   loading: boolean,
   onScanClick: (id?: string) => void,
   isScanning: boolean,
-  scanningTargetId: string | null
+  scanningTargetId: string | null,
+  onDeleteHistoryEntry: (id: string) => void
 }) {
   // Helper to check if an item is already in the current list
   const isItemInList = (name: string) => {
@@ -4004,6 +4026,14 @@ function PurchaseHistoryView({ onOpenMenu, profile, onAddItem, onRepeatPurchase,
                       >
                         <RefreshCw className="w-3.5 h-3.5" />
                         Repetir Compra
+                      </button>
+
+                      <button
+                        onClick={() => onDeleteHistoryEntry(entry.id)}
+                        className="w-full sm:w-auto flex items-center justify-center gap-2 px-4 py-2 bg-red-50 border border-red-200/50 text-red-600 rounded-xl text-[10px] font-black uppercase tracking-wider hover:bg-red-100 hover:text-red-700 transition-all active:scale-95"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                        Eliminar
                       </button>
                     </div>
                   </div>
