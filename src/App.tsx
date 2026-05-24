@@ -574,6 +574,7 @@ export default function App() {
   const [historyLoading, setHistoryLoading] = useState(true);
   const [isAdmin, setIsAdmin] = useState(false);
   const [isAdminLoading, setIsAdminLoading] = useState(true);
+  const [isFinishingShopping, setIsFinishingShopping] = useState(false);
   const [isScanning, setIsScanning] = useState(false);
   const [scanningTargetId, setScanningTargetId] = useState<string | null>(null);
 
@@ -1345,6 +1346,7 @@ export default function App() {
 
   const handleFinishShopping = async () => {
     if (!profile || !activeListId) return;
+    if (isFinishingShopping) return;
     
     const checkedItems = items.filter(i => i.checked);
     const pendingItems = items.filter(i => !i.checked);
@@ -1353,6 +1355,8 @@ export default function App() {
       addNotification("No hay productos marcados para finalizar", 'info');
       return;
     }
+
+    setIsFinishingShopping(true);
 
     try {
       // 1. Calcular total con seguridad para evitar NaN
@@ -1412,6 +1416,8 @@ export default function App() {
       console.error(e);
       addLog(`Error al finalizar compra: ${e.message}`);
       addNotification(`Error al finalizar compra: ${e.message || e}`, 'error');
+    } finally {
+      setIsFinishingShopping(false);
     }
   };
 
@@ -2365,6 +2371,7 @@ export default function App() {
                 className="fixed bottom-24 lg:bottom-28 left-1/2 -translate-x-1/2 z-50 pointer-events-none"
               >
                 <button 
+                  disabled={isFinishingShopping}
                   onClick={() => {
                     const count = items.filter(i => i.checked).length;
                     setPromptConfig({
@@ -2375,7 +2382,7 @@ export default function App() {
                       onConfirm: handleFinishShopping
                     });
                   }}
-                  className="pointer-events-auto bg-green-600 text-white px-8 py-4 rounded-full font-black uppercase text-sm tracking-widest shadow-2xl flex items-center gap-3 hover:scale-105 active:scale-95 transition-all group"
+                  className="pointer-events-auto bg-green-600 text-white px-8 py-4 rounded-full font-black uppercase text-sm tracking-widest shadow-2xl flex items-center gap-3 hover:scale-105 active:scale-95 transition-all group disabled:opacity-50 disabled:pointer-events-none"
                 >
                   <ShoppingBag className="w-5 h-5 group-hover:rotate-12 transition-transform" />
                   <span>Finalizar Compra</span>
@@ -2684,16 +2691,25 @@ export default function App() {
               <div className="flex gap-3">
                 <button 
                   type="button"
+                  disabled={isFinishingShopping}
                   onClick={() => setPromptConfig(prev => ({ ...prev, isOpen: false }))}
-                  className="flex-grow py-4 px-6 rounded-2xl font-bold bg-gray-100 text-text-secondary hover:bg-gray-200 transition-colors"
+                  className="flex-grow py-4 px-6 rounded-2xl font-bold bg-gray-100 text-text-secondary hover:bg-gray-200 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   Cancelar
                 </button>
                 <button 
                   type="submit"
-                  className="flex-grow py-4 px-6 rounded-2xl font-bold bg-accent text-white hover:scale-[1.02] active:scale-[0.98] transition-all shadow-lg shadow-accent/30"
+                  disabled={isFinishingShopping}
+                  className="flex-grow py-4 px-6 rounded-2xl font-bold bg-accent text-white hover:scale-[1.02] active:scale-[0.98] transition-all shadow-lg shadow-accent/30 disabled:opacity-50 disabled:scale-100 disabled:cursor-not-allowed flex items-center justify-center gap-2"
                 >
-                  Confirmar
+                  {isFinishingShopping ? (
+                    <>
+                      <span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                      <span>Procesando...</span>
+                    </>
+                  ) : (
+                    "Confirmar"
+                  )}
                 </button>
               </div>
             </form>
