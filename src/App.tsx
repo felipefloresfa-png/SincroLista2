@@ -34,7 +34,8 @@ import {
   limit,
   serverTimestamp,
   writeBatch,
-  getDocs
+  getDocs,
+  collection
 } from 'firebase/firestore';
 import { 
   Plus, 
@@ -234,6 +235,7 @@ interface GroceryItem {
   familyId: string;
   createdAt: any;
   is_carryover?: boolean;
+  price?: number;
 }
 
 interface ShoppingList {
@@ -1305,6 +1307,16 @@ export default function App() {
     setPromptConfig(prev => ({ ...prev, isOpen: false }));
   };
 
+  const updateItemPrice = async (item: GroceryItem, newPrice: string) => {
+    const price = parseFloat(newPrice.replace(/[^0-9.]/g, ''));
+    if (isNaN(price)) {
+      setPromptConfig(prev => ({ ...prev, isOpen: false }));
+      return;
+    }
+    await updateDoc(doc(db, 'items', item.id), { price });
+    setPromptConfig(prev => ({ ...prev, isOpen: false }));
+  };
+
   const renameCategory = async (oldCategory: string, newName: string) => {
     if (!newName || !newName.trim() || newName === oldCategory) {
       setPromptConfig(prev => ({ ...prev, isOpen: false }));
@@ -1343,43 +1355,63 @@ export default function App() {
     }
 
     try {
-      const batch = writeBatch(db);
-      
-      // 1. Crear entrada en el historial
-      const historyEntryRef = doc(historyCollection);
-      batch.set(historyEntryRef, {
-        familyId: profile.familyId,
+      // 1. Calcular total con seguridad para evitar NaN
+      let totalCost = 0;
+      checkedItems.forEach(i => {
+        const val = Number(i.price);
+        if (!isNaN(val) && val > 0) {
+          totalCost += val;
+        }
+      });
+
+      // 2. Crear entrada en el historial usando addDoc para que se intente primero
+      const historyEntry = {
+        familyId: profile.familyId || '',
         listId: activeListId,
         listName: lists.find(l => l.id === activeListId)?.name || 'Lista',
         items: checkedItems.map(i => ({ 
-          name: i.name, 
-          quantity: i.quantity, 
-          category: i.category,
-          checkedAt: serverTimestamp()
+          name: i.name || '', 
+          quantity: i.quantity || '1', 
+          category: i.category || 'Otros',
+          price: Number(i.price) && !isNaN(Number(i.price)) ? Number(i.price) : 0,
+          checkedAt: new Date()
         })),
         totalItems: checkedItems.length,
+        totalCost,
+        storeName: 'Supermercado',
         timestamp: serverTimestamp()
-      });
+      };
+
+      const historyDocRef = await addDoc(historyCollection, historyEntry);
+      addLog(`Historial guardado exitosamente con ID: ${historyDocRef.id}`);
+
+      // 3. Eliminar items completados de la lista activa en paralelo (allSettled)
+      const deletePromises = checkedItems.map(item => 
+        deleteDoc(doc(db, 'items', item.id))
+          .catch(err => {
+            addLog(`Aviso: Error al eliminar artículo transitorio ${item.name} (${item.id}): ${err.message}`);
+          })
+      );
       
-      // 2. Eliminar items completados de la lista activa
-      checkedItems.forEach(item => {
-        batch.delete(doc(db, 'items', item.id));
-      });
-      
-      // 3. Marcar items pendientes como is_carryover
-      pendingItems.forEach(item => {
-        batch.update(doc(db, 'items', item.id), { is_carryover: true });
-      });
-      
-      await batch.commit();
+      // 4. Marcar items pendientes como is_carryover en paralelo (allSettled)
+      const updatePromises = pendingItems.map(item => 
+        updateDoc(doc(db, 'items', item.id), { is_carryover: true })
+          .catch(err => {
+            addLog(`Aviso: Error al marcar artículo pendiente ${item.name} (${item.id}): ${err.message}`);
+          })
+      );
+
+      // Esperar a que se realicen las eliminaciones y actualizaciones
+      await Promise.all([...deletePromises, ...updatePromises]);
       
       await logActivity('clear', `Compra finalizada: ${checkedItems.length} items archivados`);
       addNotification(`¡Compra finalizada! ${checkedItems.length} productos archivados.`, 'success');
       
       setPromptConfig(prev => ({ ...prev, isOpen: false }));
     } catch (e: any) {
+      console.error(e);
       addLog(`Error al finalizar compra: ${e.message}`);
-      addNotification("Error al procesar la compra", 'error');
+      addNotification(`Error al finalizar compra: ${e.message || e}`, 'error');
     }
   };
 
@@ -2244,6 +2276,16 @@ export default function App() {
                             onConfirm: (val) => updateItemQty(item, val)
                           });
                         }}
+                        onUpdatePrice={() => {
+                          setPromptConfig({
+                            isOpen: true,
+                            title: `Precio para "${item.name}"`,
+                            description: "Ingresa el precio unitario del producto:",
+                            initialValue: item.price ? item.price.toString() : '',
+                            type: 'total', // Use total/number type prompt
+                            onConfirm: (val) => updateItemPrice(item, val)
+                          });
+                        }}
                         shoppingMode={shoppingMode} 
                       />
                     ))}
@@ -2681,12 +2723,13 @@ interface ItemRowProps {
   onDelete: () => void | Promise<void>;
   onEdit: () => void | Promise<void>;
   onUpdateQty: () => void | Promise<void>;
+  onUpdatePrice: () => void | Promise<void>;
   onTogglePriority: () => void | Promise<void>;
   onUpdateCategory: () => void | Promise<void>;
   shoppingMode: boolean;
 }
 
-function ItemRow({ item, onToggle, onDelete, onEdit, onUpdateQty, onTogglePriority, onUpdateCategory, shoppingMode }: ItemRowProps) {
+function ItemRow({ item, onToggle, onDelete, onEdit, onUpdateQty, onUpdatePrice, onTogglePriority, onUpdateCategory, shoppingMode }: ItemRowProps) {
   return (
     <div className={cn(
       "flex items-center gap-1.5 p-1.5 rounded-xl transition-all grow group relative",
@@ -2744,6 +2787,16 @@ function ItemRow({ item, onToggle, onDelete, onEdit, onUpdateQty, onTogglePriori
             </button>
           </div>
         )}
+        <button 
+          onClick={onUpdatePrice}
+          className={cn(
+            "text-[9px] font-black px-2 py-0.5 rounded-lg uppercase tracking-widest tabular-nums border hover:scale-105 active:scale-95 transition-all text-accent",
+            item.price ? "border-accent bg-accent/5" : "border-dashed border-accent/30 bg-transparent opacity-0 group-hover:opacity-100",
+            shoppingMode && (item.price ? "bg-accent/10 text-accent border-accent/20" : "hidden")
+          )}
+        >
+          {item.price ? `$${item.price.toLocaleString('es-CL')}` : '+Precio'}
+        </button>
         <button 
           onClick={onUpdateQty}
           className={cn(
@@ -3664,7 +3717,12 @@ function StatsDashboard({ onOpenMenu, history }: { onOpenMenu: () => void, histo
 
     history.forEach(entry => {
       const date = entry.timestamp?.toDate ? entry.timestamp.toDate() : (entry.timestamp ? new Date(entry.timestamp) : new Date());
-      const cost = entry.totalCost || 0;
+      
+      // Calculate cost: use totalCost field or sum individual items
+      let cost = entry.totalCost || 0;
+      if (!cost && entry.items) {
+        cost = entry.items.reduce((sum: number, i: any) => sum + (Number(i.price) || 0), 0);
+      }
 
       if (date.getMonth() === currentMonth && date.getFullYear() === currentYear) {
         totalThisMonth += cost;
@@ -4005,7 +4063,12 @@ function AdminPanelView({ isAdmin, onOpenMenu, onExitAdmin }: { isAdmin: boolean
 
         let totalSpending = 0;
         historySnap.forEach(doc => {
-          totalSpending += doc.data().totalCost || 0;
+          const data = doc.data() as any;
+          let cost = data.totalCost || 0;
+          if (!cost && data.items) {
+            cost = data.items.reduce((sum: number, i: any) => sum + (Number(i.price) || 0), 0);
+          }
+          totalSpending += cost;
         });
 
         setStats({
@@ -4014,7 +4077,7 @@ function AdminPanelView({ isAdmin, onOpenMenu, onExitAdmin }: { isAdmin: boolean
           items: 0,
           spending: totalSpending
         });
-        setReports(reportsSnap.docs.map(d => ({ id: d.id, ...d.data() })));
+        setReports(reportsSnap.docs.map(d => ({ id: d.id, ...d.data() as any })));
       } catch (error) {
         console.error("Error fetching admin data:", error);
       } finally {
