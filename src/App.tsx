@@ -4797,18 +4797,26 @@ function ComparePricesView({
                             {/* Lider cells */}
                             <td className="py-4 px-4 text-right">
                               {res.lider?.price && res.lider.price > 0 ? (
-                                <a 
-                                  href={res.lider.url} 
-                                  target="_blank" 
-                                  referrerPolicy="no-referrer"
-                                  className={cn(
-                                    "inline-flex items-center gap-1.5 transition-all text-xs border border-transparent px-2.5 py-1.5 rounded-xl hover:bg-blue-50/50 hover:text-blue-600",
-                                    res.lider.price === minPrice && "bg-green-50 text-green-700 font-black border-green-200/50"
+                                <div className="flex flex-col items-end">
+                                  <a 
+                                    href={res.lider.url} 
+                                    target="_blank" 
+                                    referrerPolicy="no-referrer"
+                                    className={cn(
+                                      "inline-flex items-center gap-1.5 transition-all text-xs border border-transparent px-2.5 py-1.5 rounded-xl hover:bg-blue-50/50 hover:text-blue-600",
+                                      res.lider.price === minPrice && "bg-green-50 text-green-700 font-black border-green-200/50"
+                                    )}
+                                  >
+                                    ${res.lider.price.toLocaleString('es-CL')}
+                                    <ExternalLink className="w-3 h-3 opacity-40 shrink-0" />
+                                  </a>
+                                  {res.lider.matchName && (
+                                    <span className="text-[9px] text-gray-400 mt-1 max-w-[130px] text-right leading-tight block hover:text-gray-600 line-clamp-2" title={res.lider.matchName}>
+                                      {res.lider.brand && <strong className="font-extrabold text-[#3b82f6] block text-[8px] uppercase tracking-wider">{res.lider.brand}</strong>}
+                                      {res.lider.matchName.replace(new RegExp(`^${res.lider.brand}\\s*`, 'i'), '')}
+                                    </span>
                                   )}
-                                >
-                                  ${res.lider.price.toLocaleString('es-CL')}
-                                  <ExternalLink className="w-3 h-3 opacity-40 shrink-0" />
-                                </a>
+                                </div>
                               ) : (
                                 <span className="text-xs text-gray-300 italic font-normal">Agotado</span>
                               )}
@@ -4817,18 +4825,26 @@ function ComparePricesView({
                             {/* Jumbo cells */}
                             <td className="py-4 px-4 text-right">
                               {res.jumbo?.price && res.jumbo.price > 0 ? (
-                                <a 
-                                  href={res.jumbo.url} 
-                                  target="_blank" 
-                                  referrerPolicy="no-referrer"
-                                  className={cn(
-                                    "inline-flex items-center gap-1.5 transition-all text-xs border border-transparent px-2.5 py-1.5 rounded-xl hover:bg-green-50/50 hover:text-green-700",
-                                    res.jumbo.price === minPrice && "bg-green-50 text-green-700 font-black border-green-200/50"
+                                <div className="flex flex-col items-end">
+                                  <a 
+                                    href={res.jumbo.url} 
+                                    target="_blank" 
+                                    referrerPolicy="no-referrer"
+                                    className={cn(
+                                      "inline-flex items-center gap-1.5 transition-all text-xs border border-transparent px-2.5 py-1.5 rounded-xl hover:bg-green-50/50 hover:text-green-700",
+                                      res.jumbo.price === minPrice && "bg-green-50 text-green-700 font-black border-green-200/50"
+                                    )}
+                                  >
+                                    ${res.jumbo.price.toLocaleString('es-CL')}
+                                    <ExternalLink className="w-3 h-3 opacity-40 shrink-0" />
+                                  </a>
+                                  {res.jumbo.matchName && (
+                                    <span className="text-[9px] text-gray-400 mt-1 max-w-[130px] text-right leading-tight block hover:text-gray-600 line-clamp-2" title={res.jumbo.matchName}>
+                                      {res.jumbo.brand && <strong className="font-extrabold text-[#10b981] block text-[8px] uppercase tracking-wider">{res.jumbo.brand}</strong>}
+                                      {res.jumbo.matchName.replace(new RegExp(`^${res.jumbo.brand}\\s*`, 'i'), '')}
+                                    </span>
                                   )}
-                                >
-                                  ${res.jumbo.price.toLocaleString('es-CL')}
-                                  <ExternalLink className="w-3 h-3 opacity-40 shrink-0" />
-                                </a>
+                                </div>
                               ) : (
                                 <span className="text-xs text-gray-300 italic font-normal">Agotado</span>
                               )}
@@ -4837,18 +4853,26 @@ function ComparePricesView({
                             {/* Unimarc cells */}
                             <td className="py-4 px-4 text-right">
                               {res.unimarc?.price && res.unimarc.price > 0 ? (
-                                <a 
-                                  href={res.unimarc.url} 
-                                  target="_blank" 
-                                  referrerPolicy="no-referrer"
-                                  className={cn(
-                                    "inline-flex items-center gap-1.5 transition-all text-xs border border-transparent px-2.5 py-1.5 rounded-xl hover:bg-red-50/50 hover:text-red-700",
-                                    res.unimarc.price === minPrice && "bg-green-50 text-green-700 font-black border-green-200/50"
+                                <div className="flex flex-col items-end">
+                                  <a 
+                                    href={res.unimarc.url} 
+                                    target="_blank" 
+                                    referrerPolicy="no-referrer"
+                                    className={cn(
+                                      "inline-flex items-center gap-1.5 transition-all text-xs border border-transparent px-2.5 py-1.5 rounded-xl hover:bg-red-50/50 hover:text-red-700",
+                                      res.unimarc.price === minPrice && "bg-green-50 text-green-700 font-black border-green-200/50"
+                                    )}
+                                  >
+                                    ${res.unimarc.price.toLocaleString('es-CL')}
+                                    <ExternalLink className="w-3 h-3 opacity-40 shrink-0" />
+                                  </a>
+                                  {res.unimarc.matchName && (
+                                    <span className="text-[9px] text-gray-400 mt-1 max-w-[130px] text-right leading-tight block hover:text-gray-600 line-clamp-2" title={res.unimarc.matchName}>
+                                      {res.unimarc.brand && <strong className="font-extrabold text-[#ef4444] block text-[8px] uppercase tracking-wider">{res.unimarc.brand}</strong>}
+                                      {res.unimarc.matchName.replace(new RegExp(`^${res.unimarc.brand}\\s*`, 'i'), '')}
+                                    </span>
                                   )}
-                                >
-                                  ${res.unimarc.price.toLocaleString('es-CL')}
-                                  <ExternalLink className="w-3 h-3 opacity-40 shrink-0" />
-                                </a>
+                                </div>
                               ) : (
                                 <span className="text-xs text-gray-300 italic font-normal">Agotado</span>
                               )}
