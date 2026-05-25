@@ -108,7 +108,7 @@ import {
   DollarSign
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { analyzeItem, getSmartRecommendations, parseVoiceInput, ItemInfo, ParsedVoiceItem } from './lib/gemini';
+import { analyzeItem, getSmartRecommendations, parseVoiceInput, ItemInfo, ParsedVoiceItem, searchMarketPrices, SupermarketPrice } from './lib/gemini';
 import { getInstantCategory } from './lib/itemCache';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
@@ -567,7 +567,7 @@ export default function App() {
   const [searchQuery, setSearchQuery] = useState('');
   const [lists, setLists] = useState<ShoppingList[]>([]);
   const [activeListId, setActiveListId] = useState<string | null>(null);
-  const [currentView, setCurrentView] = useState<'list' | 'stores' | 'pantry' | 'history' | 'stats' | 'admin'>('list');
+  const [currentView, setCurrentView] = useState<'list' | 'stores' | 'pantry' | 'history' | 'stats' | 'compare-prices' | 'admin'>('list');
   const [activities, setActivities] = useState<ActivityItem[]>([]);
   const [syncedUsers, setSyncedUsers] = useState<UserProfile[]>([]);
   const [history, setHistory] = useState<any[]>([]);
@@ -591,10 +591,21 @@ export default function App() {
     if (user) {
       const checkAdmin = async () => {
         try {
+          // If navigator says offline, avoid throwing connection attempt errors
+          if (typeof navigator !== 'undefined' && !navigator.onLine) {
+            console.log("Offline mode: Skipping admin database check.");
+            setIsAdmin(false);
+            setIsAdminLoading(false);
+            return;
+          }
           const adminDoc = await getDoc(doc(db, 'admins', user.uid));
           setIsAdmin(adminDoc.exists());
-        } catch (error) {
-          console.error("Error checking admin status:", error);
+        } catch (error: any) {
+          if (error?.code === 'unavailable' || error?.message?.includes('offline') || error?.message?.includes('Could not reach')) {
+            console.log("Offline mode: Cannot reach Cloud Firestore backend to verify admin status.");
+          } else {
+            console.error("Error checking admin status:", error);
+          }
           setIsAdmin(false);
         } finally {
           setIsAdminLoading(false);
@@ -950,6 +961,8 @@ export default function App() {
     const qUsers = query(usersCollection, where('familyId', '==', profile.familyId));
     const unsubUsers = onSnapshot(qUsers, (snapshot) => {
       setSyncedUsers(snapshot.docs.map(d => d.data() as UserProfile));
+    }, (err) => {
+      addLog(`Aviso Miembros: ${err.message || err.code}`);
     });
 
     // Sync Lists
@@ -1037,6 +1050,8 @@ export default function App() {
         return timeB - timeA;
       });
       setActivities(sorted);
+    }, (err) => {
+      addLog(`Aviso Actividades: ${err.message || err.code}`);
     });
   }, [profile?.familyId]);
 
@@ -1850,6 +1865,16 @@ export default function App() {
                   <span className="text-sm font-semibold">Supermercados</span>
                 </button>
                 <button 
+                  onClick={() => { setCurrentView('compare-prices'); setIsSidebarOpen(false); }}
+                  className={cn(
+                    "w-full flex items-center gap-3 px-3 py-2.5 rounded-xl transition-all",
+                    currentView === 'compare-prices' ? "bg-accent text-white shadow-md shadow-accent/20" : "hover:bg-gray-50 text-text-secondary"
+                  )}
+                >
+                  <Search className="w-4 h-4" />
+                  <span className="text-sm font-semibold">Comparar Precios</span>
+                </button>
+                <button 
                   onClick={() => { setCurrentView('pantry'); setIsSidebarOpen(false); }}
                   className={cn(
                     "w-full flex items-center gap-3 px-3 py-2.5 rounded-xl transition-all",
@@ -1955,6 +1980,31 @@ export default function App() {
             <StoresView 
               onOpenMenu={() => setIsSidebarOpen(true)} 
               addNotification={addNotification}
+            />
+          ) : currentView === 'compare-prices' ? (
+            <ComparePricesView 
+              onOpenMenu={() => setIsSidebarOpen(true)}
+              items={items}
+              addNotification={addNotification}
+              onBack={() => setCurrentView('list')}
+              onUpdatePrices={async (updatedPrices) => {
+                const batch = writeBatch(db);
+                let count = 0;
+                items.forEach(item => {
+                  const cleanedName = item.name.trim();
+                  if (updatedPrices[cleanedName] !== undefined && updatedPrices[cleanedName] > 0) {
+                    batch.update(doc(db, 'items', item.id), { price: updatedPrices[cleanedName] });
+                    count++;
+                  }
+                });
+                if (count > 0) {
+                  await batch.commit();
+                  addNotification(`¡Sincronizados ${count} precios correctamente!`, 'success');
+                  setCurrentView('list');
+                } else {
+                  addNotification('No se encontraron nuevos precios para actualizar.', 'info');
+                }
+              }}
             />
           ) : currentView === 'pantry' ? (
             <PantryView 
@@ -2130,7 +2180,7 @@ export default function App() {
                     }
                   }}
                   placeholder="Busca o agrega productos..."
-                  className="w-full h-11 bg-white border border-border rounded-2xl pl-11 pr-4 font-bold text-sm text-text-main placeholder:text-gray-400 focus:ring-4 focus:ring-accent/10 focus:border-accent outline-none transition-all shadow-sm shadow-black/5"
+                  className="w-full h-11 bg-white border border-border rounded-2xl pl-11 pr-4 font-bold text-base sm:text-sm text-text-main placeholder:text-gray-400 focus:ring-4 focus:ring-accent/10 focus:border-accent outline-none transition-all shadow-sm shadow-black/5"
                 />
                 {searchQuery && (
                   <button 
@@ -2228,6 +2278,31 @@ export default function App() {
           </motion.div>
           )}
         </div>
+
+        {items.length > 0 && !shoppingMode && (
+          <motion.div 
+            initial={{ opacity: 0, scale: 0.98 }}
+            animate={{ opacity: 1, scale: 1 }}
+            className="mb-6 bg-gradient-to-r from-accent/5 via-accent/10 to-transparent border border-accent/20 p-5 rounded-3xl flex flex-col sm:flex-row items-center justify-between gap-4 shadow-sm"
+          >
+            <div className="flex items-center gap-4 text-center sm:text-left">
+              <div className="w-12 h-12 bg-accent text-white rounded-2xl flex items-center justify-center shrink-0 shadow-lg shadow-accent/20">
+                <Search className="w-5 h-5 text-white animate-pulse" />
+              </div>
+              <div>
+                <h3 className="text-sm font-black text-text-main">¿Cuánto cuesta tu lista en los supermercados?</h3>
+                <p className="text-xs text-text-secondary font-medium">Compara precios reales de Lider, Jumbo y Unimarc con IA.</p>
+              </div>
+            </div>
+            <button 
+              onClick={() => setCurrentView('compare-prices')}
+              className="w-full sm:w-auto shrink-0 px-6 py-3 bg-accent text-white rounded-2xl font-black uppercase text-[10px] tracking-widest hover:scale-105 active:scale-95 transition-all shadow-md shadow-accent/20 flex items-center justify-center gap-2"
+            >
+              Comparar Precios
+              <ChevronRight className="w-4 h-4" />
+            </button>
+          </motion.div>
+        )}
 
         {/* Grid of items with better containment */}
           <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-2 2xl:grid-cols-3 gap-3 auto-rows-min">
@@ -2337,47 +2412,61 @@ export default function App() {
             <div className="fixed bottom-0 left-0 lg:left-[280px] right-0 p-3 lg:p-6 z-40 flex justify-center pointer-events-none pb-[env(safe-area-inset-bottom,12px)]">
               <div className="w-full max-w-xl pointer-events-auto">
                  <form 
-                   onSubmit={(e) => { e.preventDefault(); addItem(newItemName, newItemQty); }}
-                   className={cn(
-                     "bg-white/95 backdrop-blur-2xl border border-border shadow-[0_32px_64px_-16px_rgba(0,0,0,0.2)] rounded-3xl p-1.5 flex items-center gap-2 ring-1 ring-black/5 transition-all focus-within:ring-accent/30 focus-within:ring-4",
-                     isAdding && "ring-pulse"
-                   )}
-                 >
-                   <div className="w-10 h-10 bg-gray-50 rounded-xl flex items-center justify-center shrink-0 border border-border/50">
-                      {isAdding ? <RefreshCw className="w-4 h-4 text-accent animate-spin" /> : <Plus className="w-4 h-4 text-gray-400" />}
-                   </div>
-                   <input 
-                     value={newItemName}
-                     onChange={e => setNewItemName(e.target.value)}
-                     placeholder="¿Qué Falta?"
-                     className="flex-grow min-w-0 bg-transparent border-none outline-none px-2 text-sm font-bold text-text-main placeholder:text-gray-400 placeholder:font-medium"
-                     disabled={isAdding}
-                   />
-                   <VoiceInputButton onItemsFound={handleVoiceItems} onStatusChange={(msg, type) => addNotification(msg, type)} />
-                   <div className="flex items-center bg-gray-100 rounded-xl px-2 py-1.5 border border-border/50 shrink-0 relative transition-colors focus-within:bg-gray-200">
-                     <span className="text-[8px] font-black text-gray-400 uppercase mr-1 hidden min-[400px]:inline">Cant</span>
-                     <div className="relative flex items-center">
-                       <select 
-                         value={newItemQty}
-                         onChange={e => setNewItemQty(e.target.value)}
-                         className="bg-transparent border-none font-black text-xs outline-none text-text-main cursor-pointer appearance-none pr-4 py-0"
-                         disabled={isAdding}
-                       >
-                         {[1,2,3,4,5,6,7,8,9,10].map(n => (
-                           <option key={n} value={String(n)}>{n}</option>
-                         ))}
-                       </select>
-                       <ChevronDown className="w-3 h-3 text-gray-400 absolute right-0 pointer-events-none" />
-                     </div>
-                   </div>
-                   <button 
-                     type="submit"
-                     disabled={!newItemName.trim() || isAdding}
-                     className="bg-accent text-white p-3 rounded-2xl hover:scale-[1.05] active:scale-[0.95] transition-all shadow-lg shadow-accent/40 disabled:opacity-50 disabled:grayscale disabled:scale-100"
-                   >
-                     <Check className="w-5 h-5" strokeWidth={3} />
-                   </button>
-                 </form>
+                    onSubmit={(e) => { 
+                      e.preventDefault(); 
+                      if (!newItemName.trim() || isAdding) return;
+                      setIsAdding(true);
+                      addItem(newItemName, newItemQty); 
+                    }}
+                    className={cn(
+                      "bg-white/95 backdrop-blur-2xl border border-border shadow-[0_32px_64px_-16px_rgba(0,0,0,0.2)] rounded-3xl p-1.5 flex items-center gap-1.5 sm:gap-2 ring-1 ring-black/5 transition-all focus-within:ring-accent/30 focus-within:ring-4",
+                      isAdding && "ring-pulse"
+                    )}
+                  >
+                    {/* Campo de Texto Principal */}
+                    <div className="flex items-center gap-1 flex-grow min-w-0 pb-0.5">
+                      <div className="w-9 h-9 sm:w-10 sm:h-10 bg-gray-50 rounded-xl flex items-center justify-center shrink-0 border border-border/50">
+                         {isAdding ? <RefreshCw className="w-4 h-4 text-accent animate-spin" /> : <Plus className="w-4 h-4 text-gray-400" />}
+                      </div>
+                      <input 
+                        value={newItemName}
+                        onChange={e => setNewItemName(e.target.value)}
+                        placeholder="¿Qué Falta?"
+                        className="flex-grow min-w-0 bg-transparent border-none outline-none px-1.5 text-base sm:text-sm font-bold text-text-main placeholder:text-gray-400 placeholder:font-medium"
+                        disabled={isAdding}
+                      />
+                    </div>
+                    
+                    {/* Acciones y Controles Auxiliares en el mismo renglón */}
+                    <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
+                      <VoiceInputButton onItemsFound={handleVoiceItems} onStatusChange={(msg, type) => addNotification(msg, type)} />
+                      
+                      <div className="flex items-center bg-gray-100 rounded-xl px-1.5 py-1 sm:px-2 sm:py-1.5 border border-border/50 shrink-0 relative transition-colors focus-within:bg-gray-200">
+                        <span className="text-[8px] font-black text-gray-400 uppercase mr-1 hidden min-[400px]:inline">Cant</span>
+                        <div className="relative flex items-center">
+                          <select 
+                            value={newItemQty}
+                            onChange={e => setNewItemQty(e.target.value)}
+                            className="bg-transparent border-none font-black text-xs outline-none text-text-main cursor-pointer appearance-none pr-4 py-0"
+                            disabled={isAdding}
+                          >
+                            {[1,2,3,4,5,6,7,8,9,10].map(n => (
+                              <option key={n} value={String(n)}>{n}</option>
+                            ))}
+                          </select>
+                          <ChevronDown className="w-3 h-3 text-gray-400 absolute right-0 pointer-events-none" />
+                        </div>
+                      </div>
+
+                      <button 
+                        type="submit"
+                        disabled={!newItemName.trim() || isAdding}
+                        className="bg-accent text-white p-2.5 sm:p-3 rounded-2xl hover:scale-[1.05] active:scale-[0.95] transition-all shadow-lg shadow-accent/40 disabled:opacity-50 disabled:grayscale disabled:scale-100 shrink-0"
+                      >
+                        <Check className="w-4 h-4 sm:w-5 sm:h-5" strokeWidth={3} />
+                      </button>
+                    </div>
+                  </form>
               </div>
             </div>
           )}
@@ -2705,7 +2794,7 @@ export default function App() {
                     name="promptInput"
                     defaultValue={promptConfig.initialValue}
                     placeholder={promptConfig.placeholder || "Escribe aquí..."}
-                    className="w-full bg-gray-50 border border-border rounded-2xl px-5 py-4 font-bold text-text-main focus:ring-4 focus:ring-accent/10 focus:border-accent outline-hidden mb-6"
+                    className="w-full bg-gray-50 border border-border rounded-2xl px-5 py-4 font-bold text-base text-text-main focus:ring-4 focus:ring-accent/10 focus:border-accent outline-hidden mb-6"
                   />
                 )
               )}
@@ -2784,16 +2873,18 @@ function ItemRow({ item, onToggle, onDelete, onEdit, onUpdateQty, onUpdatePrice,
       </button>
       
       <div className="flex-grow min-w-0">
-        <div className="flex items-center gap-1.5">
+        <div className="flex items-center gap-1.5 w-full">
           <button 
             onClick={onUpdateCategory}
             className={cn(
-              "text-sm font-bold leading-tight truncate transition-all text-left block",
+              "text-sm font-bold leading-tight transition-all text-left flex-grow min-w-0 block pb-0.5",
               item.checked && !shoppingMode && "line-through decoration-2",
               shoppingMode ? (item.checked ? "text-gray-600 line-through" : "text-gray-100") : "text-text-main"
             )}
           >
-            {item.name}
+            <span className="break-words line-clamp-2 whitespace-normal block leading-tight">
+              {item.name}
+            </span>
           </button>
           {item.is_carryover && !item.checked && (
             <span className="text-[7px] font-black uppercase tracking-tighter bg-accent/10 text-accent px-1 py-0.5 rounded-sm shrink-0">Anterior</span>
@@ -4268,3 +4359,520 @@ function StatCard({ title, value, icon, color }: { title: string, value: string,
     </div>
   );
 }
+
+interface ComparePricesViewProps {
+  onOpenMenu: () => void;
+  items: GroceryItem[];
+  addNotification: (msg: string, type?: 'success' | 'error' | 'info') => void;
+  onBack: () => void;
+  onUpdatePrices: (prices: { [name: string]: number }) => Promise<void>;
+}
+
+function ComparePricesView({ 
+  onOpenMenu, 
+  items, 
+  addNotification, 
+  onBack, 
+  onUpdatePrices 
+}: ComparePricesViewProps) {
+  const [loading, setLoading] = useState(false);
+  const [results, setResults] = useState<SupermarketPrice[]>([]);
+  const [currentStep, setCurrentStep] = useState(0);
+  const [error, setError] = useState<string | null>(null);
+  const [isUpdating, setIsUpdating] = useState(false);
+
+  // Filtrar solo items activos (no marcados) para cotizar
+  const activeItems = items.filter(item => !item.checked);
+
+  const steps = [
+    "🚀 Iniciando conexión con motores de búsqueda...",
+    "📋 Analizando los productos de tu canasta activa...",
+    "🔍 Consultando precios actuales en Lider cl...",
+    "🐘 Buscando coincidencias y ofertas reales en Jumbo cl...",
+    "🔴 Elevando consulta a Unimarc cl para comparar...",
+    "📊 Consolidando el reporte de precios final..."
+  ];
+
+  // Cambio inteligente de mensajes de carga
+  useEffect(() => {
+    let timer: any;
+    if (loading) {
+      timer = setInterval(() => {
+        setCurrentStep(prev => (prev + 1) % steps.length);
+      }, 3000);
+    } else {
+      setCurrentStep(0);
+    }
+    return () => clearInterval(timer);
+  }, [loading]);
+
+  const handleFetchPrices = async () => {
+    if (activeItems.length === 0) {
+      addNotification("No tienes productos activos para buscar precios.", "error");
+      return;
+    }
+
+    setLoading(true);
+    setError(null);
+    setResults([]);
+
+    try {
+      // Extraemos solo los nombres de los productos activos
+      const itemNames = activeItems.map(item => item.name.trim());
+      
+      // Llamamos a la función de búsqueda que utiliza Gemini 3.5 Flash con Google Search Grounding
+      const data = await searchMarketPrices(itemNames);
+      setResults(data);
+      addNotification("Cotización en vivo finalizada con éxito.", "success");
+    } catch (err: any) {
+      console.error("Error comparando precios:", err);
+      setError(err?.message || "No se pudo completar la búsqueda de precios.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Calcular totales sumando (precio * cantidad del item de la lista)
+  const calculateTotal = (supermarket: 'lider' | 'jumbo' | 'unimarc') => {
+    return results.reduce((sum, res) => {
+      const activeItem = activeItems.find(i => i.name.toLowerCase() === res.name.toLowerCase());
+      const qty = activeItem ? (parseFloat(activeItem.quantity) || 1) : 1;
+      const price = res[supermarket]?.price || 0;
+      return sum + (price * qty);
+    }, 0);
+  };
+
+  // Cuenta cuántos productos tienen precio > 0 en cada supermercado
+  const countFound = (supermarket: 'lider' | 'jumbo' | 'unimarc') => {
+    return results.filter(res => (res[supermarket]?.price || 0) > 0).length;
+  };
+
+  const totals = {
+    lider: calculateTotal('lider'),
+    jumbo: calculateTotal('jumbo'),
+    unimarc: calculateTotal('unimarc')
+  };
+
+  const foundCounts = {
+    lider: countFound('lider'),
+    jumbo: countFound('jumbo'),
+    unimarc: countFound('unimarc')
+  };
+
+  // Determinar cuál es el más barato (excluyendo los que den total 0 por si fallan todos de un supermercado)
+  const validTotals = Object.entries(totals).filter(([_, val]) => val > 0);
+  let cheapestSupermarket = "";
+  if (validTotals.length > 0) {
+    cheapestSupermarket = validTotals.reduce((min, cur) => cur[1] < min[1] ? cur : min, validTotals[0])[0];
+  }
+
+  const handleApplyPricesStore = async (store: 'lider' | 'jumbo' | 'unimarc') => {
+    setIsUpdating(true);
+    try {
+      const mapping: { [name: string]: number } = {};
+      results.forEach(res => {
+        const priceValue = res[store]?.price || 0;
+        if (priceValue > 0) {
+          mapping[res.name.trim()] = priceValue;
+        }
+      });
+      await onUpdatePrices(mapping);
+    } catch (err) {
+      addNotification("Ocurrió un error al actualizar los precios.", "error");
+    } finally {
+      setIsUpdating(false);
+    }
+  };
+
+  return (
+    <div className="p-4 md:p-8 lg:p-12 space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500">
+      {/* Header */}
+      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+        <div className="flex items-center gap-3">
+          <button 
+            onClick={onOpenMenu}
+            className="p-3 bg-white border border-gray-100 text-text-secondary rounded-2xl hover:border-accent transition-colors shadow-sm active:scale-90"
+          >
+            <Menu className="w-5 h-5" />
+          </button>
+          <div>
+            <h1 className="text-3xl font-black text-gray-900 uppercase tracking-tighter flex items-center gap-2">
+              Comparar Precios <Search className="w-6 h-6 text-accent animate-pulse" />
+            </h1>
+            <p className="text-sm text-gray-500 font-medium">Precios reales de supermercados en Chile mediante Google Grounding</p>
+          </div>
+        </div>
+        <button 
+          onClick={onBack}
+          className="px-6 py-3 bg-gray-100 text-text-secondary rounded-2xl font-black uppercase text-[10px] tracking-widest hover:bg-gray-200 transition-all flex items-center justify-center gap-2"
+        >
+          Volver a mi Lista
+        </button>
+      </div>
+
+      {activeItems.length === 0 ? (
+        <div className="bg-white rounded-[2rem] p-12 text-center border border-gray-100 shadow-xl shadow-gray-100/40 space-y-6">
+          <div className="w-16 h-16 bg-accent/10 text-accent rounded-3xl flex items-center justify-center mx-auto text-3xl">
+            📋
+          </div>
+          <div className="space-y-2">
+            <h2 className="text-xl font-black text-gray-900 uppercase tracking-tighter">Tu canasta está vacía</h2>
+            <p className="text-gray-500 max-w-sm mx-auto text-sm font-medium leading-relaxed">
+              Agrega productos activos a tu lista de compras para poder realizar cotizaciones reales en Líder, Jumbo o Unimarc.
+            </p>
+          </div>
+          <button 
+            onClick={onBack}
+            className="px-6 py-3 bg-accent text-white rounded-2xl font-black uppercase tracking-wider text-xs shadow-lg shadow-accent/20 hover:scale-105 active:scale-95 transition-all"
+          >
+            Ir a agregar productos
+          </button>
+        </div>
+      ) : (
+        <>
+          {/* Action Trigger Block */}
+          {results.length === 0 && !loading && (
+            <div className="bg-gradient-to-r from-accent/5 via-accent/10 to-transparent border border-accent/20 rounded-[2rem] p-8 flex flex-col md:flex-row items-center justify-between gap-6 shadow-sm">
+              <div className="space-y-2 text-center md:text-left">
+                <span className="bg-accent/10 text-accent text-[10px] font-black uppercase tracking-widest px-3 py-1 rounded-full">
+                  Búsqueda Real-Time
+                </span>
+                <h3 className="text-lg font-black text-gray-900">¿Listo para cotizar {activeItems.length} productos?</h3>
+                <p className="text-xs text-text-secondary font-medium max-w-xl leading-relaxed">
+                  Usaremos el motor de IA de Google Gemini para realizar búsquedas en vivo de tus productos. 
+                  Esto buscará los precios actuales en las páginas oficiales de <strong>Líder, Jumbo y Unimarc</strong> de Chile. No se basará en estimaciones pasadas.
+                </p>
+              </div>
+              <button 
+                onClick={handleFetchPrices}
+                className="w-full md:w-auto shrink-0 px-8 py-4 bg-accent text-white rounded-2xl font-black uppercase text-xs tracking-widest shadow-xl shadow-accent/30 hover:scale-[1.03] active:scale-95 transition-all flex items-center justify-center gap-2"
+              >
+                <Search className="w-4 h-4" />
+                Buscar Precios
+              </button>
+            </div>
+          )}
+
+          {/* Loading States */}
+          {loading && (
+            <div className="bg-white rounded-[2rem] border border-gray-100 p-12 text-center shadow-xl shadow-gray-100/40 flex flex-col items-center justify-center space-y-6">
+              <div className="relative flex items-center justify-center">
+                <div className="w-20 h-20 border-4 border-accent/10 border-t-accent rounded-full animate-spin" />
+                <div className="absolute text-2xl">🔍</div>
+              </div>
+              <div className="space-y-2 animate-pulse">
+                <h3 className="text-lg font-black text-gray-800 uppercase tracking-tighter">Comparando Precios</h3>
+                <p className="text-sm font-bold text-accent font-mono transition-all duration-300">
+                  {steps[currentStep]}
+                </p>
+              </div>
+              <p className="text-xs text-gray-400 font-medium max-w-xs leading-relaxed">
+                Este proceso ejecuta búsquedas reales en tiempo real con IA. Puede tardar un momento en consolidar todos los datos chilenos.
+              </p>
+            </div>
+          )}
+
+          {/* Error handling */}
+          {error && (
+            <div className="bg-red-50 border border-red-100 text-red-700 p-6 rounded-2xl space-y-3 flex flex-col items-center text-center">
+              <div className="text-2xl">⚠️</div>
+              <p className="text-sm font-bold">{error}</p>
+              <button 
+                onClick={handleFetchPrices}
+                className="px-4 py-2 bg-red-600 text-white rounded-xl text-xs font-black uppercase tracking-wider"
+              >
+                Reintentar Búsqueda
+              </button>
+            </div>
+          )}
+
+          {/* Results Overview */}
+          {results.length > 0 && !loading && (
+            <div className="space-y-8">
+              {/* Reset/New search button */}
+              <div className="flex justify-between items-center bg-gray-50 p-4 rounded-2xl">
+                <span className="text-xs text-text-secondary font-semibold">
+                  Última cotización basada en {activeItems.length} productos activos.
+                </span>
+                <button 
+                  onClick={handleFetchPrices}
+                  className="px-4 py-2 hover:bg-white text-accent hover:border-accent border border-transparent rounded-xl text-xs font-black uppercase tracking-widest flex items-center gap-1.5 transition-all active:scale-95"
+                >
+                  <RefreshCw className="w-3.5 h-3.5" /> Re-Cotizar Todo
+                </button>
+              </div>
+
+              {/* Supermarket Comparison Cards */}
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                {/* Lider card */}
+                <div className={cn(
+                  "bg-white rounded-3xl p-6 border transition-all duration-300 flex flex-col justify-between space-y-6 shadow-xl shadow-gray-100/30",
+                  cheapestSupermarket === 'lider' ? "border-green-400 bg-green-50/10 ring-4 ring-green-100" : "border-gray-100 hover:border-gray-200"
+                )}>
+                  <div className="flex justify-between items-start">
+                    <div className="flex items-center gap-3">
+                      <div className="w-12 h-12 rounded-2xl bg-blue-50 text-blue-600 flex items-center justify-center text-2xl font-bold">
+                        🛒
+                      </div>
+                      <div>
+                        <h3 className="font-extrabold text-gray-900 text-lg">Líder Ch.</h3>
+                        <p className="text-[10px] text-gray-400 font-bold uppercase tracking-widest">Walmart Chile</p>
+                      </div>
+                    </div>
+                    {cheapestSupermarket === 'lider' && (
+                      <span className="bg-green-600 text-white text-[9px] font-black uppercase tracking-widest px-2.5 py-1 rounded-full flex items-center gap-1 shadow-sm">
+                        🏆 El más barato
+                      </span>
+                    )}
+                  </div>
+
+                  <div className="space-y-1">
+                    <p className="text-[10px] text-gray-400 font-bold uppercase tracking-widest">Costo total de canasta</p>
+                    <p className="text-3xl font-black text-gray-900 tracking-tighter">
+                      {totals.lider > 0 ? `$${totals.lider.toLocaleString('es-CL')}` : 'Sin stock/No hallado'}
+                    </p>
+                    <p className="text-xs text-text-secondary font-medium">
+                      Coincidencia: {foundCounts.lider} de {results.length} productos
+                    </p>
+                  </div>
+
+                  <button
+                    disabled={totals.lider === 0 || isUpdating}
+                    onClick={() => handleApplyPricesStore('lider')}
+                    className={cn(
+                      "w-full py-3.5 rounded-xl font-black uppercase tracking-widest text-[10px] transition-all flex items-center justify-center gap-2",
+                      cheapestSupermarket === 'lider'
+                        ? "bg-green-600 text-white hover:bg-green-700 shadow-md shadow-green-200"
+                        : "bg-gray-100 text-gray-700 hover:bg-gray-200"
+                    )}
+                  >
+                    {isUpdating ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
+                    Aplicar estos precios
+                  </button>
+                </div>
+
+                {/* Jumbo card */}
+                <div className={cn(
+                  "bg-white rounded-3xl p-6 border transition-all duration-300 flex flex-col justify-between space-y-6 shadow-xl shadow-gray-100/30",
+                  cheapestSupermarket === 'jumbo' ? "border-green-400 bg-green-50/10 ring-4 ring-green-100" : "border-gray-100 hover:border-gray-200"
+                )}>
+                  <div className="flex justify-between items-start">
+                    <div className="flex items-center gap-3">
+                      <div className="w-12 h-12 rounded-2xl bg-green-50 text-green-600 flex items-center justify-center text-3xl">
+                        🐘
+                      </div>
+                      <div>
+                        <h3 className="font-extrabold text-gray-900 text-lg">Jumbo</h3>
+                        <p className="text-[10px] text-gray-400 font-bold uppercase tracking-widest">Cencosud</p>
+                      </div>
+                    </div>
+                    {cheapestSupermarket === 'jumbo' && (
+                      <span className="bg-green-600 text-white text-[9px] font-black uppercase tracking-widest px-2.5 py-1 rounded-full flex items-center gap-1 shadow-sm">
+                        🏆 El más barato
+                      </span>
+                    )}
+                  </div>
+
+                  <div className="space-y-1">
+                    <p className="text-[10px] text-gray-400 font-bold uppercase tracking-widest">Costo total de canasta</p>
+                    <p className="text-3xl font-black text-gray-900 tracking-tighter">
+                      {totals.jumbo > 0 ? `$${totals.jumbo.toLocaleString('es-CL')}` : 'Sin stock/No hallado'}
+                    </p>
+                    <p className="text-xs text-text-secondary font-medium">
+                      Coincidencia: {foundCounts.jumbo} de {results.length} productos
+                    </p>
+                  </div>
+
+                  <button
+                    disabled={totals.jumbo === 0 || isUpdating}
+                    onClick={() => handleApplyPricesStore('jumbo')}
+                    className={cn(
+                      "w-full py-3.5 rounded-xl font-black uppercase tracking-widest text-[10px] transition-all flex items-center justify-center gap-2",
+                      cheapestSupermarket === 'jumbo'
+                        ? "bg-green-600 text-white hover:bg-green-700 shadow-md shadow-green-200"
+                        : "bg-gray-100 text-gray-700 hover:bg-gray-200"
+                    )}
+                  >
+                    {isUpdating ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
+                    Aplicar estos precios
+                  </button>
+                </div>
+
+                {/* Unimarc card */}
+                <div className={cn(
+                  "bg-white rounded-3xl p-6 border transition-all duration-300 flex flex-col justify-between space-y-6 shadow-xl shadow-gray-100/30",
+                  cheapestSupermarket === 'unimarc' ? "border-green-400 bg-green-50/10 ring-4 ring-green-100" : "border-gray-100 hover:border-gray-200"
+                )}>
+                  <div className="flex justify-between items-start">
+                    <div className="flex items-center gap-3">
+                      <div className="w-12 h-12 rounded-2xl bg-red-50 text-red-600 flex items-center justify-center text-2xl font-bold">
+                        🔴
+                      </div>
+                      <div>
+                        <h3 className="font-extrabold text-gray-900 text-lg">Unimarc</h3>
+                        <p className="text-[10px] text-gray-400 font-bold uppercase tracking-widest">SMU S.A.</p>
+                      </div>
+                    </div>
+                    {cheapestSupermarket === 'unimarc' && (
+                      <span className="bg-green-600 text-white text-[9px] font-black uppercase tracking-widest px-2.5 py-1 rounded-full flex items-center gap-1 shadow-sm">
+                        🏆 El más barato
+                      </span>
+                    )}
+                  </div>
+
+                  <div className="space-y-1">
+                    <p className="text-[10px] text-gray-400 font-bold uppercase tracking-widest">Costo total de canasta</p>
+                    <p className="text-3xl font-black text-gray-900 tracking-tighter">
+                      {totals.unimarc > 0 ? `$${totals.unimarc.toLocaleString('es-CL')}` : 'Sin stock/No hallado'}
+                    </p>
+                    <p className="text-xs text-text-secondary font-medium">
+                      Coincidencia: {foundCounts.unimarc} de {results.length} productos
+                    </p>
+                  </div>
+
+                  <button
+                    disabled={totals.unimarc === 0 || isUpdating}
+                    onClick={() => handleApplyPricesStore('unimarc')}
+                    className={cn(
+                      "w-full py-3.5 rounded-xl font-black uppercase tracking-widest text-[10px] transition-all flex items-center justify-center gap-2",
+                      cheapestSupermarket === 'unimarc'
+                        ? "bg-green-600 text-white hover:bg-green-700 shadow-md shadow-green-200"
+                        : "bg-gray-100 text-gray-700 hover:bg-gray-200"
+                    )}
+                  >
+                    {isUpdating ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
+                    Aplicar estos precios
+                  </button>
+                </div>
+              </div>
+
+              {/* Detailed price list table */}
+              <div className="bg-white rounded-[2rem] border border-gray-100 shadow-xl shadow-gray-100/40 overflow-hidden">
+                <div className="p-6 border-b border-gray-100">
+                  <h3 className="text-md font-black text-gray-900 uppercase tracking-tighter">Desglose Detallado de Productos</h3>
+                  <p className="text-[11px] text-gray-400 font-medium">Haz clic en el precio de cualquier producto para ver su ficha original en la tienda.</p>
+                </div>
+
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left border-collapse">
+                    <thead>
+                      <tr className="bg-gray-50 text-[10px] font-black uppercase tracking-widest text-text-secondary border-b border-gray-100">
+                        <th className="py-4 px-6">Producto Canasta</th>
+                        <th className="py-4 px-4 text-center">Cant.</th>
+                        <th className="py-4 px-4 text-right">Líder</th>
+                        <th className="py-4 px-4 text-right">Jumbo</th>
+                        <th className="py-4 px-4 text-right border-r border-transparent">Unimarc</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-gray-50">
+                      {results.map((res, index) => {
+                        const activeItem = activeItems.find(i => i.name.toLowerCase() === res.name.toLowerCase());
+                        const displayQty = activeItem ? activeItem.quantity : '1';
+
+                        // Encontrar precio mínimo que sea > 0
+                        const availablePrices = [
+                          { store: 'lider', price: res.lider?.price || 0 },
+                          { store: 'jumbo', price: res.jumbo?.price || 0 },
+                          { store: 'unimarc', price: res.unimarc?.price || 0 }
+                        ].filter(p => p.price > 0);
+
+                        const minPrice = availablePrices.length > 0 
+                          ? Math.min(...availablePrices.map(p => p.price)) 
+                          : 0;
+
+                        return (
+                          <tr key={index} className="hover:bg-gray-50/50 transition-colors text-sm font-medium text-gray-700">
+                            <td className="py-4 px-6">
+                              <div className="font-extrabold text-gray-900">{res.name}</div>
+                              <div className="text-[10px] text-gray-400 font-bold uppercase tracking-wide">
+                                {activeItem?.category || 'Otros'}
+                              </div>
+                            </td>
+                            <td className="py-4 px-4 text-center">
+                              <span className="bg-gray-100 px-2 py-1 rounded-lg text-xs font-black text-gray-600">
+                                {displayQty}
+                              </span>
+                            </td>
+                            
+                            {/* Lider cells */}
+                            <td className="py-4 px-4 text-right">
+                              {res.lider?.price && res.lider.price > 0 ? (
+                                <a 
+                                  href={res.lider.url} 
+                                  target="_blank" 
+                                  referrerPolicy="no-referrer"
+                                  className={cn(
+                                    "inline-flex items-center gap-1.5 transition-all text-xs border border-transparent px-2.5 py-1.5 rounded-xl hover:bg-blue-50/50 hover:text-blue-600",
+                                    res.lider.price === minPrice && "bg-green-50 text-green-700 font-black border-green-200/50"
+                                  )}
+                                >
+                                  ${res.lider.price.toLocaleString('es-CL')}
+                                  <ExternalLink className="w-3 h-3 opacity-40 shrink-0" />
+                                </a>
+                              ) : (
+                                <span className="text-xs text-gray-300 italic font-normal">Agotado</span>
+                              )}
+                            </td>
+
+                            {/* Jumbo cells */}
+                            <td className="py-4 px-4 text-right">
+                              {res.jumbo?.price && res.jumbo.price > 0 ? (
+                                <a 
+                                  href={res.jumbo.url} 
+                                  target="_blank" 
+                                  referrerPolicy="no-referrer"
+                                  className={cn(
+                                    "inline-flex items-center gap-1.5 transition-all text-xs border border-transparent px-2.5 py-1.5 rounded-xl hover:bg-green-50/50 hover:text-green-700",
+                                    res.jumbo.price === minPrice && "bg-green-50 text-green-700 font-black border-green-200/50"
+                                  )}
+                                >
+                                  ${res.jumbo.price.toLocaleString('es-CL')}
+                                  <ExternalLink className="w-3 h-3 opacity-40 shrink-0" />
+                                </a>
+                              ) : (
+                                <span className="text-xs text-gray-300 italic font-normal">Agotado</span>
+                              )}
+                            </td>
+
+                            {/* Unimarc cells */}
+                            <td className="py-4 px-4 text-right">
+                              {res.unimarc?.price && res.unimarc.price > 0 ? (
+                                <a 
+                                  href={res.unimarc.url} 
+                                  target="_blank" 
+                                  referrerPolicy="no-referrer"
+                                  className={cn(
+                                    "inline-flex items-center gap-1.5 transition-all text-xs border border-transparent px-2.5 py-1.5 rounded-xl hover:bg-red-50/50 hover:text-red-700",
+                                    res.unimarc.price === minPrice && "bg-green-50 text-green-700 font-black border-green-200/50"
+                                  )}
+                                >
+                                  ${res.unimarc.price.toLocaleString('es-CL')}
+                                  <ExternalLink className="w-3 h-3 opacity-40 shrink-0" />
+                                </a>
+                              ) : (
+                                <span className="text-xs text-gray-300 italic font-normal">Agotado</span>
+                              )}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              {/* Explanatory disclaimer */}
+              <div className="bg-accent/5 rounded-2xl p-5 border border-accent/10 flex items-start gap-3.5">
+                <div className="text-lg translate-y-0.5">💡</div>
+                <div className="text-xs text-text-secondary font-medium leading-relaxed">
+                  <strong>¿Cómo funciona esto?</strong> Al pulsar en buscar, realizamos una consulta digital mediante la <strong>tecnología de Grounding de Google</strong>. El sistema lee y decodifica las páginas de los supermercados buscando el artículo exacto o la alternativa más parecida disponible en Santiago de Chile. Al aplicar los precios, éstos se almacenarán en tu base de datos de SincroLista para calcular tu presupuesto en vivo de ahora en adelante.
+                </div>
+              </div>
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
