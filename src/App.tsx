@@ -61,6 +61,7 @@ import {
   Users,
   Link as LinkIcon,
   Layout,
+  LayoutGrid,
   ChevronDown,
   UserPlus,
   Pencil,
@@ -567,7 +568,8 @@ export default function App() {
   const [searchQuery, setSearchQuery] = useState('');
   const [lists, setLists] = useState<ShoppingList[]>([]);
   const [activeListId, setActiveListId] = useState<string | null>(null);
-  const [currentView, setCurrentView] = useState<'list' | 'stores' | 'pantry' | 'history' | 'stats' | 'compare-prices' | 'admin'>('list');
+  const [currentView, setCurrentView] = useState<'list' | 'dashboard' | 'stores' | 'pantry' | 'history' | 'stats' | 'compare-prices' | 'admin'>('list');
+  const [familyItemsCountMap, setFamilyItemsCountMap] = useState<{[listId: string]: { total: number, checked: number, unchecked: number }}>({});
   const [activities, setActivities] = useState<ActivityItem[]>([]);
   const [syncedUsers, setSyncedUsers] = useState<UserProfile[]>([]);
   const [history, setHistory] = useState<any[]>([]);
@@ -973,9 +975,15 @@ export default function App() {
       const fetchedLists = snapshot.docs.map(d => ({ id: d.id, ...d.data() })) as ShoppingList[];
       setLists(fetchedLists);
       if (fetchedLists.length > 0) {
-        const id = fetchedLists[0].id;
-        addLog(`ID activa establecida: ${id.substring(0,5)}...`);
-        setActiveListId(prev => prev && !prev.startsWith('temp-') ? prev : id);
+        const savedId = localStorage.getItem(`sincrolista_active_list_${profile.familyId}`);
+        const fallbackId = (savedId && fetchedLists.some(l => l.id === savedId)) ? savedId : fetchedLists[0].id;
+        addLog(`ID activa establecida: ${fallbackId.substring(0,5)}...`);
+        setActiveListId(prev => {
+          if (prev && !prev.startsWith('temp-') && fetchedLists.some(l => l.id === prev)) {
+            return prev;
+          }
+          return fallbackId;
+        });
       } else {
         addLog("Nube vacía. Creando lista inicial...");
         createDefaultList(profile.familyId);
@@ -1031,6 +1039,48 @@ export default function App() {
     return unsub;
   }, [activeListId, profile?.familyId]);
 
+  // Persistir la lista activa seleccionada en almacenamiento local por familia
+  useEffect(() => {
+    if (activeListId && !activeListId.startsWith('temp-') && profile?.familyId) {
+      localStorage.setItem(`sincrolista_active_list_${profile.familyId}`, activeListId);
+    }
+  }, [activeListId, profile?.familyId]);
+
+  // Sincronizar todos los productos de la familia para el conteo de listas en tiempo real
+  useEffect(() => {
+    if (!profile?.familyId) return;
+
+    addLog("Sincronizando conteos de productos por lista...");
+    const qAllItems = query(
+      itemsCollection,
+      where('familyId', '==', profile.familyId)
+    );
+
+    const unsub = onSnapshot(qAllItems, (snapshot) => {
+      const counts: {[listId: string]: { total: number, checked: number, unchecked: number }} = {};
+      snapshot.docs.forEach(doc => {
+        const data = doc.data() as any;
+        const listId = data.listId;
+        if (listId) {
+          if (!counts[listId]) {
+            counts[listId] = { total: 0, checked: 0, unchecked: 0 };
+          }
+          counts[listId].total += 1;
+          if (data.checked) {
+            counts[listId].checked += 1;
+          } else {
+            counts[listId].unchecked += 1;
+          }
+        }
+      });
+      setFamilyItemsCountMap(counts);
+    }, (err) => {
+      console.warn("Aviso conteo productos:", err.message);
+    });
+
+    return unsub;
+  }, [profile?.familyId]);
+
   // Sync Activities (Explicitly filter by familyId)
   useEffect(() => {
     if (!profile?.familyId) return;
@@ -1072,6 +1122,27 @@ export default function App() {
         const timeB = b.timestamp?.toMillis ? b.timestamp.toMillis() : (b.timestamp ? new Date(b.timestamp).getTime() : 0);
         return timeB - timeA;
       }).slice(0, 20);
+
+      // Migrar registros anteriores donde storeName sea 'Supermercado' pero correspondían a otra lista
+      snapshot.docs.forEach(async (d) => {
+        const docData = d.data() as any;
+        if (
+          docData.storeName === 'Supermercado' && 
+          docData.listName && 
+          docData.listName !== 'Lista' && 
+          docData.listName !== 'Supermercado'
+        ) {
+          try {
+            await updateDoc(doc(db, 'history', d.id), { 
+              storeName: docData.listName 
+            });
+            addLog(`Migrado registro ${d.id}: Cambiado nombre de comercio de 'Supermercado' a '${docData.listName}'`);
+          } catch (e: any) {
+            console.error("Error al migrar entrada de historial:", e);
+          }
+        }
+      });
+
       setHistory(data);
       setHistoryLoading(false);
     }, (error) => {
@@ -1384,10 +1455,11 @@ export default function App() {
       });
 
       // 2. Crear entrada en el historial usando addDoc para que se intente primero
+      const activeListName = lists.find(l => l.id === activeListId)?.name || 'Supermercado';
       const historyEntry = {
         familyId: profile.familyId || '',
         listId: activeListId,
-        listName: lists.find(l => l.id === activeListId)?.name || 'Lista',
+        listName: activeListName,
         items: checkedItems.map(i => ({ 
           name: i.name || '', 
           quantity: i.quantity || '1', 
@@ -1397,7 +1469,7 @@ export default function App() {
         })),
         totalItems: checkedItems.length,
         totalCost,
-        storeName: 'Supermercado',
+        storeName: activeListName,
         timestamp: serverTimestamp()
       };
 
@@ -1806,35 +1878,59 @@ export default function App() {
                 </button>
               </div>
               <div className="space-y-1">
-                {lists.map(l => (
-                  <div key={l.id} className="group/list relative">
-                    <button 
-                      onClick={() => { setActiveListId(l.id); setCurrentView('list'); setIsSidebarOpen(false); }}
-                      className={cn(
-                        "w-full flex items-center gap-3 px-3 py-2.5 rounded-xl transition-all pr-12",
-                        currentView === 'list' && activeListId === l.id ? "bg-accent text-white shadow-md shadow-accent/20" : "hover:bg-gray-50 text-text-secondary"
-                      )}
-                    >
-                      <div className={cn("w-2 h-2 rounded-full shrink-0", activeListId === l.id ? "bg-white" : "")} style={{ backgroundColor: activeListId === l.id ? undefined : l.color }} />
-                      <span className="text-sm font-semibold truncate">{l.name}</span>
-                    </button>
-                    
-                    <div className="absolute right-1 top-1/2 -translate-y-1/2 flex items-center gap-0.5 opacity-0 group-hover/list:opacity-100 transition-opacity">
+                <button 
+                  onClick={() => { setCurrentView('dashboard'); setIsSidebarOpen(false); }}
+                  className={cn(
+                    "w-full flex items-center gap-3 px-3 py-2.5 rounded-xl transition-all mb-2",
+                    currentView === 'dashboard' ? "bg-accent text-white shadow-md shadow-accent/20" : "hover:bg-gray-50 text-text-secondary"
+                  )}
+                >
+                  <LayoutGrid className="w-4 h-4 shrink-0" />
+                  <span className="text-sm font-semibold flex-grow text-left">Panel General</span>
+                </button>
+
+                {lists.map(l => {
+                  const pendingCount = familyItemsCountMap[l.id]?.unchecked || 0;
+                  return (
+                    <div key={l.id} className="group/list relative">
                       <button 
-                         onClick={(e) => { e.stopPropagation(); handleRenameListPrompt(l); }}
-                         className={cn("p-1.5 rounded-lg transition-colors", activeListId === l.id ? "text-white/70 hover:text-white hover:bg-white/10" : "text-gray-300 hover:text-accent hover:bg-accent/5")}
+                        onClick={() => { setActiveListId(l.id); setCurrentView('list'); setIsSidebarOpen(false); }}
+                        className={cn(
+                          "w-full flex items-center gap-3 px-3 py-2.5 rounded-xl transition-all pr-12",
+                          currentView === 'list' && activeListId === l.id ? "bg-accent text-white shadow-md shadow-accent/20" : "hover:bg-gray-50 text-text-secondary"
+                        )}
                       >
-                        <Pencil className="w-3 h-3" />
+                        <div className={cn("w-2 h-2 rounded-full shrink-0", activeListId === l.id ? "bg-white" : "")} style={{ backgroundColor: activeListId === l.id ? undefined : l.color }} />
+                        <span className="text-sm font-semibold truncate flex-grow text-left">{l.name}</span>
+                        {pendingCount > 0 && (
+                          <span className={cn(
+                            "text-[10px] font-black px-1.5 py-0.5 rounded-full shrink-0 transition-colors",
+                            currentView === 'list' && activeListId === l.id 
+                              ? "bg-white text-accent" 
+                              : "bg-accent/10 text-accent group-hover/list:bg-accent/20"
+                          )}>
+                            {pendingCount}
+                          </span>
+                        )}
                       </button>
-                      <button 
-                         onClick={(e) => { e.stopPropagation(); handleConfirmDeleteList(l); }}
-                         className={cn("p-1.5 rounded-lg transition-colors", activeListId === l.id ? "text-white/70 hover:text-red-200 hover:bg-red-400/20" : "text-gray-300 hover:text-red-500 hover:bg-red-50")}
-                      >
-                        <Trash2 className="w-3 h-3" />
-                      </button>
+                      
+                      <div className="absolute right-1 top-1/2 -translate-y-1/2 flex items-center gap-0.5 opacity-0 group-hover/list:opacity-100 transition-opacity">
+                        <button 
+                           onClick={(e) => { e.stopPropagation(); handleRenameListPrompt(l); }}
+                           className={cn("p-1.5 rounded-lg transition-colors", activeListId === l.id ? "text-white/70 hover:text-white hover:bg-white/10" : "text-gray-300 hover:text-accent hover:bg-accent/5")}
+                        >
+                          <Pencil className="w-3" />
+                        </button>
+                        <button 
+                           onClick={(e) => { e.stopPropagation(); handleConfirmDeleteList(l); }}
+                           className={cn("p-1.5 rounded-lg transition-colors", activeListId === l.id ? "text-white/70 hover:text-red-200 hover:bg-red-400/20" : "text-gray-300 hover:text-red-500 hover:bg-red-50")}
+                        >
+                          <Trash2 className="w-3" />
+                        </button>
+                      </div>
                     </div>
-                  </div>
-                ))}
+                  );
+                })}
                 <button 
                   onClick={() => { setCurrentView('history'); setIsSidebarOpen(false); }}
                   className={cn(
@@ -2005,6 +2101,20 @@ export default function App() {
                   addNotification('No se encontraron nuevos precios para actualizar.', 'info');
                 }
               }}
+            />
+          ) : currentView === 'dashboard' ? (
+            <ListsDashboardView 
+              onOpenMenu={() => setIsSidebarOpen(true)}
+              lists={lists}
+              familyItemsCountMap={familyItemsCountMap}
+              onSelectList={(id) => {
+                setActiveListId(id);
+                setCurrentView('list');
+              }}
+              handleCreateListPrompt={handleCreateListPrompt}
+              handleRenameListPrompt={handleRenameListPrompt}
+              handleConfirmDeleteList={handleConfirmDeleteList}
+              profile={profile}
             />
           ) : currentView === 'pantry' ? (
             <PantryView 
@@ -3866,7 +3976,7 @@ function StatsDashboard({ onOpenMenu, history }: { onOpenMenu: () => void, histo
 
       // Stores
       if (entry.storeName) {
-        const store = entry.storeName.includes('Feria') ? 'Feria' : 'Supermercado';
+        const store = entry.storeName.toLowerCase().includes('feria') ? 'Feria' : 'Supermercado';
         storeCounts[store] = (storeCounts[store] || 0) + 1;
       }
     });
@@ -4070,7 +4180,7 @@ function PurchaseHistoryView({ onOpenMenu, profile, onAddItem, onRepeatPurchase,
                       <div className="flex flex-col gap-0.5">
                         <div className="flex items-center gap-2">
                           <h4 className="font-bold text-text-main">{entry.storeName || dateStr}</h4>
-                          {entry.listName && (
+                          {entry.listName && entry.listName.toLowerCase() !== (entry.storeName || "").toLowerCase() && (
                             <span className="px-2 py-0.5 bg-accent/5 text-accent text-[9px] font-black uppercase rounded-md border border-accent/10">
                               {entry.listName}
                             </span>
@@ -4083,7 +4193,7 @@ function PurchaseHistoryView({ onOpenMenu, profile, onAddItem, onRepeatPurchase,
                             {!entry.storeName && <span>• {dateStr}</span>}
                           </div>
                           {entry.totalItems > 0 && <span>• {entry.totalItems} productos</span>}
-                          {entry.totalCost && (
+                          {entry.totalCost > 0 && (
                             <span className="text-accent font-black">
                               • ${entry.totalCost.toLocaleString('es-CL')}
                             </span>
@@ -4150,7 +4260,7 @@ function PurchaseHistoryView({ onOpenMenu, profile, onAddItem, onRepeatPurchase,
                             alreadyInList ? "bg-green-500" : "bg-accent/30 group-hover/item:bg-accent"
                           )} />
                           <span>{item.name}</span>
-                          {item.price && item.price > 0 && (
+                          {item.price > 0 && (
                             <span className={cn(
                               "font-black ml-1",
                               alreadyInList ? "text-green-600" : "text-accent"
@@ -4176,6 +4286,233 @@ function PurchaseHistoryView({ onOpenMenu, profile, onAddItem, onRepeatPurchase,
             })}
           </div>
         )}
+      </div>
+    </div>
+  );
+}
+
+function ListsDashboardView({ 
+  onOpenMenu, 
+  lists, 
+  familyItemsCountMap, 
+  onSelectList, 
+  handleCreateListPrompt, 
+  handleRenameListPrompt, 
+  handleConfirmDeleteList,
+  profile
+}: { 
+  onOpenMenu: () => void, 
+  lists: any[], 
+  familyItemsCountMap: any, 
+  onSelectList: (id: string) => void, 
+  handleCreateListPrompt: () => void, 
+  handleRenameListPrompt: (list: any) => void, 
+  handleConfirmDeleteList: (list: any) => void,
+  profile: any
+}) {
+  // Calculamos algunas métricas generales
+  const totals = useMemo(() => {
+    let pending = 0;
+    let completed = 0;
+    let totalLists = lists.length;
+    Object.values(familyItemsCountMap).forEach((val: any) => {
+      pending += val.unchecked || 0;
+      completed += val.checked || 0;
+    });
+    return { pending, completed, totalLists };
+  }, [lists, familyItemsCountMap]);
+
+  return (
+    <div className="min-h-screen bg-bg">
+      {/* Header persistent en Mobile */}
+      <div className="lg:hidden flex items-center justify-between p-4 bg-white border-b border-border sticky top-0 z-[100]">
+        <button onClick={onOpenMenu} className="p-2 bg-white border border-border rounded-xl shadow-sm active:scale-95 transition-all">
+          <Menu className="w-5 h-5 text-text-main" strokeWidth={2.5} />
+        </button>
+        <span className="font-bold text-base text-text-main">Panel General</span>
+        <div className="w-9 h-9" /> {/* Spacer */}
+      </div>
+
+      {/* Hero Header Area - Desktop */}
+      <header className="hidden lg:flex items-center justify-between p-12 pb-6">
+        <div className="flex flex-col">
+          <h2 className="text-3xl font-black tracking-tighter text-text-main">
+            Panel General
+          </h2>
+          <p className="text-sm text-text-secondary mt-1 font-medium">
+            Control central de tus listas de compras compartidas
+          </p>
+        </div>
+        
+        <button 
+          onClick={handleCreateListPrompt}
+          className="flex items-center gap-2 px-6 py-3 rounded-2xl bg-accent text-white font-black uppercase tracking-widest text-[10px] transition-all shadow-lg shadow-accent/20 hover:scale-[1.02] active:scale-[0.98]"
+        >
+          <Plus className="w-4 h-4" strokeWidth={3} />
+          Nueva Lista
+        </button>
+      </header>
+
+      {/* Content Area */}
+      <div className="p-4 md:p-8 lg:p-12 pt-4 space-y-8 pb-32 max-w-6xl mx-auto">
+        
+        {/* Quick Stats Grid */}
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+          <div className="bg-white p-5 rounded-2xl border border-border shadow-soft flex items-center gap-4 transition-all hover:shadow-md">
+            <div className="w-12 h-12 bg-accent/5 rounded-xl flex items-center justify-center text-accent">
+              <LayoutGrid className="w-6 h-6" />
+            </div>
+            <div>
+              <p className="text-[10px] font-black uppercase tracking-widest text-text-secondary">Tus Listas</p>
+              <h3 className="text-xl font-black text-text-main mt-0.5">{totals.totalLists}</h3>
+            </div>
+          </div>
+
+          <div className="bg-white p-5 rounded-2xl border border-border shadow-soft flex items-center gap-4 transition-all hover:shadow-md">
+            <div className="w-12 h-12 bg-amber-500/5 rounded-xl flex items-center justify-center text-amber-500">
+              <Clock className="w-6 h-6" />
+            </div>
+            <div>
+              <p className="text-[10px] font-black uppercase tracking-widest text-text-secondary">Nueve Pendientes</p>
+              <h3 className="text-xl font-black text-text-main mt-0.5">{totals.pending} productos</h3>
+            </div>
+          </div>
+
+          <div className="bg-white p-5 rounded-2xl border border-border shadow-soft flex items-center gap-4 transition-all hover:shadow-md">
+            <div className="w-12 h-12 bg-green-500/5 rounded-xl flex items-center justify-center text-green-500">
+              <CheckCircle2 className="w-6 h-6" />
+            </div>
+            <div>
+              <p className="text-[10px] font-black uppercase tracking-widest text-text-secondary">Completados en Carrito</p>
+              <h3 className="text-xl font-black text-text-main mt-0.5">{totals.completed} productos</h3>
+            </div>
+          </div>
+        </div>
+
+        {/* Master lists card grid */}
+        <div>
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="text-xs font-black uppercase tracking-widest text-text-secondary">
+              Listas de Grupo
+            </h3>
+            <button 
+              onClick={handleCreateListPrompt}
+              className="lg:hidden text-accent text-xs font-bold hover:underline flex items-center gap-1"
+            >
+              <Plus className="w-3.5 h-3.5" strokeWidth={3} />
+              Crear Lista
+            </button>
+          </div>
+
+          {lists.length === 0 ? (
+            <div className="bg-white rounded-3xl border border-border/80 p-12 text-center shadow-soft flex flex-col items-center max-w-lg mx-auto">
+              <div className="w-16 h-16 bg-accent/5 rounded-2xl flex items-center justify-center text-accent mb-4">
+                <LayoutGrid className="w-8 h-8" />
+              </div>
+              <h3 className="text-lg font-black text-text-main leading-snug">No tienes ninguna lista</h3>
+              <p className="text-xs text-text-secondary mt-1 max-w-sm">
+                Crea una lista para comenzar a organizar tus compras familiares o grupales en tiempo real.
+              </p>
+              <button
+                onClick={handleCreateListPrompt}
+                className="mt-6 px-6 py-3 bg-accent text-white font-black text-xs uppercase tracking-widest rounded-2xl leading-none shadow-lg shadow-accent/20 hover:scale-105 active:scale-95 transition-all"
+              >
+                Crear Mi Primera Lista
+              </button>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+              {lists.map((list) => {
+                const listStats = familyItemsCountMap[list.id] || { total: 0, checked: 0, unchecked: 0 };
+                const pct = listStats.total > 0 ? Math.round((listStats.checked / listStats.total) * 100) : 0;
+                const actualPct = Math.min(pct, 100);
+
+                return (
+                  <motion.div
+                    key={list.id}
+                    whileHover={{ y: -4, transition: { duration: 0.2 } }}
+                    className="relative bg-white rounded-2xl border border-border shadow-soft hover:shadow-md transition-all overflow-hidden flex flex-col h-[200px]"
+                  >
+                    {/* Color Accent Bar on Left */}
+                    <div className="absolute left-0 top-0 bottom-0 w-1.5 shrink-0" style={{ backgroundColor: list.color }} />
+
+                    <div className="p-6 flex flex-col h-full pl-8 justify-between">
+                      <div>
+                        {/* Title and Action Dots */}
+                        <div className="flex items-start justify-between gap-4">
+                          <button
+                            onClick={() => onSelectList(list.id)}
+                            className="font-black text-lg text-text-main hover:text-accent text-left transition-colors truncate max-w-[80%]"
+                          >
+                            {list.name}
+                          </button>
+                          
+                          <div className="flex items-center gap-1 shrink-0">
+                            <button
+                              onClick={() => handleRenameListPrompt(list)}
+                              title="Renombrar"
+                              className="p-1.5 hover:bg-gray-100 text-gray-400 hover:text-accent rounded-lg transition-colors"
+                            >
+                              <Pencil className="w-3.5 h-3.5" />
+                            </button>
+                            <button
+                              onClick={() => handleConfirmDeleteList(list)}
+                              title="Borrar"
+                              className="p-1.5 hover:bg-red-50 text-gray-400 hover:text-red-500 rounded-lg transition-colors"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        </div>
+
+                        {/* Counts Pill Label */}
+                        <div className="flex items-center gap-2 mt-2">
+                          <span className="text-[10px] font-black uppercase tracking-wider text-text-secondary bg-gray-100 px-2 py-0.5 rounded-md">
+                            {listStats.total} {listStats.total === 1 ? 'producto' : 'productos'}
+                          </span>
+                          {listStats.unchecked > 0 && (
+                            <span className="text-[10px] font-black uppercase tracking-wider text-amber-600 bg-amber-50 px-2 py-0.5 rounded-md">
+                              {listStats.unchecked} pendientes
+                            </span>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Progress Bar & Open Button */}
+                      <div className="space-y-4">
+                        {listStats.total > 0 && (
+                          <div className="space-y-1">
+                            <div className="flex justify-between text-[9px] uppercase font-black tracking-widest text-text-secondary">
+                              <span>Completado</span>
+                              <span>{actualPct}%</span>
+                            </div>
+                            <div className="h-1.5 w-full bg-gray-100 rounded-full overflow-hidden">
+                              <div
+                                className="h-full rounded-full transition-all duration-300"
+                                style={{ 
+                                  backgroundColor: list.color,
+                                  width: `${actualPct}%` 
+                                }}
+                              />
+                            </div>
+                          </div>
+                        )}
+
+                        <button
+                          onClick={() => onSelectList(list.id)}
+                          className="w-full flex items-center justify-center gap-2 py-2 bg-gray-50 border border-border/80 hover:bg-accent hover:border-accent hover:text-white rounded-xl text-[10px] font-black uppercase tracking-widest text-text-secondary transition-all active:scale-[0.98]"
+                        >
+                          Ver Lista 
+                          <ChevronRight className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    </div>
+                  </motion.div>
+                );
+              })}
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );
