@@ -4368,34 +4368,34 @@ function ListsDashboardView({
       <div className="p-4 md:p-8 lg:p-12 pt-4 space-y-8 pb-32 max-w-6xl mx-auto">
         
         {/* Quick Stats Grid */}
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-          <div className="bg-white p-5 rounded-2xl border border-border shadow-soft flex items-center gap-4 transition-all hover:shadow-md">
-            <div className="w-12 h-12 bg-accent/5 rounded-xl flex items-center justify-center text-accent">
-              <LayoutGrid className="w-6 h-6" />
+        <div className="grid grid-cols-3 gap-2 sm:gap-4">
+          <div className="bg-white p-2.5 sm:p-5 rounded-2xl border border-border shadow-soft flex items-center gap-1.5 sm:gap-4 transition-all hover:shadow-md">
+            <div className="w-8 h-8 sm:w-12 sm:h-12 bg-accent/5 rounded-xl flex items-center justify-center text-accent shrink-0">
+              <LayoutGrid className="w-4 h-4 sm:w-6 sm:h-6" />
             </div>
-            <div>
-              <p className="text-[10px] font-black uppercase tracking-widest text-text-secondary">Tus Listas</p>
-              <h3 className="text-xl font-black text-text-main mt-0.5">{totals.totalLists}</h3>
-            </div>
-          </div>
-
-          <div className="bg-white p-5 rounded-2xl border border-border shadow-soft flex items-center gap-4 transition-all hover:shadow-md">
-            <div className="w-12 h-12 bg-amber-500/5 rounded-xl flex items-center justify-center text-amber-500">
-              <Clock className="w-6 h-6" />
-            </div>
-            <div>
-              <p className="text-[10px] font-black uppercase tracking-widest text-text-secondary">Nueve Pendientes</p>
-              <h3 className="text-xl font-black text-text-main mt-0.5">{totals.pending} productos</h3>
+            <div className="min-w-0">
+              <p className="text-[8px] sm:text-[10px] font-black uppercase tracking-widest text-text-secondary truncate">Tus Listas</p>
+              <h3 className="text-sm sm:text-xl font-black text-text-main mt-0.5">{totals.totalLists}</h3>
             </div>
           </div>
 
-          <div className="bg-white p-5 rounded-2xl border border-border shadow-soft flex items-center gap-4 transition-all hover:shadow-md">
-            <div className="w-12 h-12 bg-green-500/5 rounded-xl flex items-center justify-center text-green-500">
-              <CheckCircle2 className="w-6 h-6" />
+          <div className="bg-white p-2.5 sm:p-5 rounded-2xl border border-border shadow-soft flex items-center gap-1.5 sm:gap-4 transition-all hover:shadow-md">
+            <div className="w-8 h-8 sm:w-12 sm:h-12 bg-amber-500/5 rounded-xl flex items-center justify-center text-amber-500 shrink-0">
+              <Clock className="w-4 h-4 sm:w-6 sm:h-6" />
             </div>
-            <div>
-              <p className="text-[10px] font-black uppercase tracking-widest text-text-secondary">Completados en Carrito</p>
-              <h3 className="text-xl font-black text-text-main mt-0.5">{totals.completed} productos</h3>
+            <div className="min-w-0">
+              <p className="text-[8px] sm:text-[10px] font-black uppercase tracking-widest text-text-secondary truncate">Pendientes</p>
+              <h3 className="text-sm sm:text-xl font-black text-text-main mt-0.5 truncate">{totals.pending} <span className="hidden xs:inline text-[10px] font-medium text-text-secondary">u.</span></h3>
+            </div>
+          </div>
+
+          <div className="bg-white p-2.5 sm:p-5 rounded-2xl border border-border shadow-soft flex items-center gap-1.5 sm:gap-4 transition-all hover:shadow-md">
+            <div className="w-8 h-8 sm:w-12 sm:h-12 bg-green-500/5 rounded-xl flex items-center justify-center text-green-500 shrink-0">
+              <CheckCircle2 className="w-4 h-4 sm:w-6 sm:h-6" />
+            </div>
+            <div className="min-w-0">
+              <p className="text-[8px] sm:text-[10px] font-black uppercase tracking-widest text-text-secondary truncate">En Carrito</p>
+              <h3 className="text-sm sm:text-xl font-black text-text-main mt-0.5 truncate">{totals.completed} <span className="hidden xs:inline text-[10px] font-medium text-text-secondary">u.</span></h3>
             </div>
           </div>
         </div>
@@ -4432,7 +4432,7 @@ function ListsDashboardView({
               </button>
             </div>
           ) : (
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+            <div className="grid grid-cols-2 lg:grid-cols-3 gap-3 sm:gap-6">
               {lists.map((list) => {
                 const listStats = familyItemsCountMap[list.id] || { total: 0, checked: 0, unchecked: 0 };
                 const pct = listStats.total > 0 ? Math.round((listStats.checked / listStats.total) * 100) : 0;
@@ -4442,64 +4442,64 @@ function ListsDashboardView({
                   <motion.div
                     key={list.id}
                     whileHover={{ y: -4, transition: { duration: 0.2 } }}
-                    className="relative bg-white rounded-2xl border border-border shadow-soft hover:shadow-md transition-all overflow-hidden flex flex-col h-[200px]"
+                    className="relative bg-white rounded-2xl border border-border shadow-soft hover:shadow-md transition-all overflow-hidden flex flex-col h-[175px] sm:h-[200px]"
                   >
                     {/* Color Accent Bar on Left */}
                     <div className="absolute left-0 top-0 bottom-0 w-1.5 shrink-0" style={{ backgroundColor: list.color }} />
 
-                    <div className="p-6 flex flex-col h-full pl-8 justify-between">
+                    <div className="p-3.5 sm:p-6 flex flex-col h-full pl-5 sm:pl-8 justify-between">
                       <div>
                         {/* Title and Action Dots */}
-                        <div className="flex items-start justify-between gap-4">
+                        <div className="flex items-start justify-between gap-1 sm:gap-4">
                           <button
                             onClick={() => onSelectList(list.id)}
-                            className="font-black text-lg text-text-main hover:text-accent text-left transition-colors truncate max-w-[80%]"
+                            className="font-black text-sm sm:text-lg text-text-main hover:text-accent text-left transition-colors truncate max-w-[70%] sm:max-w-[80%]"
                           >
                             {list.name}
                           </button>
                           
-                          <div className="flex items-center gap-1 shrink-0">
+                          <div className="flex items-center gap-0.5 sm:gap-1 shrink-0">
                             <button
                               onClick={() => handleRenameListPrompt(list)}
                               title="Renombrar"
-                              className="p-1.5 hover:bg-gray-100 text-gray-400 hover:text-accent rounded-lg transition-colors"
+                              className="p-1 sm:p-1.5 hover:bg-gray-100 text-gray-400 hover:text-accent rounded-lg transition-colors"
                             >
-                              <Pencil className="w-3.5 h-3.5" />
+                              <Pencil className="w-3 sm:w-3.5 h-3 sm:h-3.5" />
                             </button>
                             <button
                               onClick={() => handleConfirmDeleteList(list)}
                               title="Borrar"
-                              className="p-1.5 hover:bg-red-50 text-gray-400 hover:text-red-500 rounded-lg transition-colors"
+                              className="p-1 sm:p-1.5 hover:bg-red-50 text-gray-400 hover:text-red-500 rounded-lg transition-colors"
                             >
-                              <Trash2 className="w-3.5 h-3.5" />
+                              <Trash2 className="w-3 sm:w-3.5 h-3 sm:h-3.5" />
                             </button>
                           </div>
                         </div>
 
                         {/* Counts Pill Label */}
-                        <div className="flex items-center gap-2 mt-2">
-                          <span className="text-[10px] font-black uppercase tracking-wider text-text-secondary bg-gray-100 px-2 py-0.5 rounded-md">
-                            {listStats.total} {listStats.total === 1 ? 'producto' : 'productos'}
+                        <div className="flex flex-wrap items-center gap-1 mt-1.5 sm:mt-2">
+                          <span className="text-[8px] sm:text-[10px] font-black uppercase tracking-wider text-text-secondary bg-gray-100 px-1.5 sm:px-2 py-0.5 rounded-md truncate">
+                            {listStats.total} {listStats.total === 1 ? 'prod.' : 'prod.'}
                           </span>
                           {listStats.unchecked > 0 && (
-                            <span className="text-[10px] font-black uppercase tracking-wider text-amber-600 bg-amber-50 px-2 py-0.5 rounded-md">
-                              {listStats.unchecked} pendientes
+                            <span className="text-[8px] sm:text-[10px] font-black uppercase tracking-wider text-amber-600 bg-amber-50 px-1.5 sm:px-2 py-0.5 rounded-md truncate">
+                              {listStats.unchecked} pend.
                             </span>
                           )}
                         </div>
                       </div>
 
                       {/* Progress Bar & Open Button */}
-                      <div className="space-y-4">
+                      <div className="space-y-2 sm:space-y-4">
                         {listStats.total > 0 && (
                           <div className="space-y-1">
-                            <div className="flex justify-between text-[9px] uppercase font-black tracking-widest text-text-secondary">
-                              <span>Completado</span>
+                            <div className="flex justify-between text-[8px] sm:text-[9px] uppercase font-black tracking-widest text-text-secondary">
+                              <span>Progreso</span>
                               <span>{actualPct}%</span>
                             </div>
-                            <div className="h-1.5 w-full bg-gray-100 rounded-full overflow-hidden">
+                            <div className="h-1 sm:h-1.5 w-full bg-gray-100 rounded-full overflow-hidden">
                               <div
-                                className="h-full rounded-full transition-all duration-300"
+                                        className="h-full rounded-full transition-all duration-300"
                                 style={{ 
                                   backgroundColor: list.color,
                                   width: `${actualPct}%` 
@@ -4511,10 +4511,10 @@ function ListsDashboardView({
 
                         <button
                           onClick={() => onSelectList(list.id)}
-                          className="w-full flex items-center justify-center gap-2 py-2 bg-gray-50 border border-border/80 hover:bg-accent hover:border-accent hover:text-white rounded-xl text-[10px] font-black uppercase tracking-widest text-text-secondary transition-all active:scale-[0.98]"
+                          className="w-full flex items-center justify-center gap-1 py-1.5 sm:py-2 bg-gray-50 border border-border/80 hover:bg-accent hover:border-accent hover:text-white rounded-xl text-[8px] sm:text-[10px] font-black uppercase tracking-widest text-text-secondary transition-all active:scale-[0.98]"
                         >
                           Ver Lista 
-                          <ChevronRight className="w-3.5 h-3.5" />
+                          <ChevronRight className="w-3 sm:w-3.5 h-3 sm:h-3.5" />
                         </button>
                       </div>
                     </div>
