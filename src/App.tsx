@@ -2201,9 +2201,14 @@ export default function App() {
 
               {/* Header & Search Persistent - Sticky on Mobile */}
               <div className={cn(
-                "sticky top-0 z-[100] transition-all duration-300 lg:static lg:bg-transparent lg:backdrop-blur-none lg:p-0 lg:mx-0 lg:border-none",
+                "sticky top-0 z-[100] transition-all duration-300 lg:static lg:bg-transparent lg:backdrop-blur-none lg:p-0 lg:mx-0 lg:border-none w-full",
                 isScrolled 
-                  ? "bg-white/95 backdrop-blur-md p-3 px-4 border-b border-border shadow-md -mx-4 md:-mx-8" 
+                  ? cn(
+                      "backdrop-blur-md py-3 px-4 md:px-8 shadow-md border-b",
+                      shoppingMode
+                        ? "bg-gray-950/95 border-gray-800/85"
+                        : "bg-white/95 border-border"
+                    )
                   : "bg-transparent p-4 md:p-8 lg:p-12 pb-6"
               )}>
             {/* Top Bar Mobile (Hides on scroll to save space) */}
@@ -2985,11 +2990,12 @@ function ItemRow({ item, onToggle, onDelete, onEdit, onUpdateQty, onUpdatePrice,
       <div className="flex-grow min-w-0">
         <div className="flex items-center gap-1.5 w-full">
           <button 
-            onClick={onUpdateCategory}
+            onClick={shoppingMode ? undefined : onEdit}
+            disabled={shoppingMode}
             className={cn(
               "text-sm font-bold leading-tight transition-all text-left flex-grow min-w-0 block pb-0.5",
               item.checked && !shoppingMode && "line-through decoration-2",
-              shoppingMode ? (item.checked ? "text-gray-600 line-through" : "text-gray-100") : "text-text-main"
+              shoppingMode ? (item.checked ? "text-gray-600 line-through" : "text-gray-100") : "text-text-main hover:text-accent"
             )}
           >
             <span className="break-words line-clamp-2 whitespace-normal block leading-tight">
@@ -2999,37 +3005,42 @@ function ItemRow({ item, onToggle, onDelete, onEdit, onUpdateQty, onUpdatePrice,
           {item.is_carryover && !item.checked && (
             <span className="text-[7px] font-black uppercase tracking-tighter bg-accent/10 text-accent px-1 py-0.5 rounded-sm shrink-0">Anterior</span>
           )}
-          <button 
-            onClick={onTogglePriority}
-            className="shrink-0 p-0.5 hover:bg-gray-100 rounded-lg transition-colors"
-          >
-            {item.priority === 'high' && !item.checked ? (
+          {item.priority === 'high' && !item.checked ? (
+            <button 
+              onClick={onTogglePriority}
+              className="shrink-0 p-0.5"
+            >
               <AlertCircle className="w-3.5 h-3.5 text-orange-500 animate-pulse" />
-            ) : (
-              <AlertCircle className="w-3.5 h-3.5 text-gray-200 opacity-0 group-hover:opacity-100" />
-            )}
-          </button>
+            </button>
+          ) : (
+            <button 
+              onClick={onTogglePriority}
+              className="hidden lg:block shrink-0 p-0.5 text-gray-200 lg:opacity-0 lg:group-hover:opacity-100 transition-opacity"
+            >
+              <AlertCircle className="w-3.5 h-3.5" />
+            </button>
+          )}
         </div>
         {item.notes && <p className="text-[9px] text-text-secondary mt-0.5">{item.notes}</p>}
       </div>
 
       <div className="flex items-center gap-1 shrink-0">
         {!shoppingMode && (
-          <div className="flex items-center gap-0.5 animate-in fade-in zoom-in-95 duration-200">
-            <button 
-              onClick={onEdit}
-              className="lg:opacity-0 group-hover:opacity-100 p-1.5 hover:bg-gray-100 border border-transparent hover:border-border text-gray-300 hover:text-text-main rounded-lg transition-all"
-              title="Editar"
-            >
-              <Pencil className="w-3 h-3" />
-            </button>
-          </div>
+          <button 
+            onClick={onEdit}
+            className="hidden lg:flex lg:opacity-0 lg:group-hover:opacity-100 p-1.5 hover:bg-gray-100 border border-transparent hover:border-border text-gray-300 hover:text-text-main rounded-lg transition-all"
+            title="Editar"
+          >
+            <Pencil className="w-3 h-3" />
+          </button>
         )}
         <button 
           onClick={onUpdatePrice}
           className={cn(
             "text-[9px] font-black px-2 py-0.5 rounded-lg uppercase tracking-widest tabular-nums border hover:scale-105 active:scale-95 transition-all text-accent",
-            item.price ? "border-accent bg-accent/5" : "border-dashed border-accent/30 bg-transparent opacity-0 group-hover:opacity-100",
+            item.price 
+              ? "border-accent bg-accent/5 inline-block" 
+              : "hidden lg:inline-block border-dashed border-accent/30 bg-transparent lg:opacity-0 lg:group-hover:opacity-100",
             shoppingMode && (item.price ? "bg-accent/10 text-accent border-accent/20" : "hidden")
           )}
         >
