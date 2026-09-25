@@ -20,7 +20,7 @@ service cloud.firestore {
       allow list: if isAdmin();
       allow create: if isSignedIn() && request.auth.uid == userId && isValidUser(incoming());
       allow update: if isSignedIn() && request.auth.uid == userId && isValidUser(incoming())
-                    && incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'photoURL', 'favoriteItems', 'familyId']);
+                    && incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'photoURL', 'favoriteItems', 'familyId', 'fcmToken', 'pushNotificationsEnabled']);
       
       function isValidUser(data) {
         return data.uid == request.auth.uid

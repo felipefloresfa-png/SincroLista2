@@ -106,11 +106,23 @@ import {
   Megaphone,
   Send,
   Bug,
-  DollarSign
+  DollarSign,
+  Bell,
+  BellRing,
+  BellOff
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { analyzeItem, getSmartRecommendations, parseVoiceInput, ItemInfo, ParsedVoiceItem, searchMarketPrices, SupermarketPrice } from './lib/gemini';
 import { getInstantCategory } from './lib/itemCache';
+import { 
+  requestFCMToken, 
+  showLocalNotification, 
+  playChimeSound, 
+  getNotificationPermission, 
+  isNotificationSupported, 
+  listenToForegroundMessages,
+  NotificationPermissionStatus 
+} from './lib/notifications';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 
@@ -254,11 +266,14 @@ interface UserProfile {
   photoURL: string;
   familyId: string;
   favoriteItems?: string[];
+  fcmToken?: string;
+  pushNotificationsEnabled?: boolean;
 }
 
 interface ActivityItem {
   id: string;
   userId: string;
+  userName?: string;
   type: 'add' | 'check' | 'delete' | 'clear';
   itemName: string;
   category?: string;
@@ -702,6 +717,9 @@ export default function App() {
   const [shoppingMode, setShoppingMode] = useState(false);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [pushStatus, setPushStatus] = useState<NotificationPermissionStatus>('default');
+  const [isPushModalOpen, setIsPushModalOpen] = useState(false);
+  const [isPushSubscribing, setIsPushSubscribing] = useState(false);
   const [loading, setLoading] = useState(false); // Used for other global loading states if needed
   const [isScrolled, setIsScrolled] = useState(false);
   const [notifications, setNotifications] = useState<Notification[]>([]);
@@ -723,6 +741,66 @@ export default function App() {
     window.addEventListener('scroll', handleScroll, { passive: true });
     return () => window.removeEventListener('scroll', handleScroll);
   }, []);
+
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      setPushStatus(getNotificationPermission());
+    }
+
+    const unsubPromise = listenToForegroundMessages((payload) => {
+      if (payload.title) {
+        addNotification(`${payload.title}: ${payload.body || ''}`, 'info');
+      }
+    });
+
+    return () => {
+      unsubPromise.then(unsub => unsub?.());
+    };
+  }, []);
+
+  const handleTogglePushNotifications = async () => {
+    if (!profile) return;
+    setIsPushSubscribing(true);
+    try {
+      const result = await requestFCMToken();
+      setPushStatus(result.permission);
+      if (result.permission === 'granted') {
+        const updates: any = {
+          pushNotificationsEnabled: true
+        };
+        if (result.token) {
+          updates.fcmToken = result.token;
+        }
+        await updateDoc(doc(db, 'users', profile.uid), updates);
+        setProfile(prev => prev ? ({ ...prev, ...updates }) : null);
+        playChimeSound('add');
+        addNotification('¡Notificaciones push activadas correctamente!', 'success');
+        showLocalNotification('SincroLista 🛒', {
+          body: '¡Listo! Te avisaremos cuando tu pareja agregue o marque productos.',
+          soundType: 'general'
+        });
+      } else if (result.permission === 'denied') {
+        addNotification('Permiso denegado en el navegador. Habilítalo en la barra de direcciones.', 'error');
+      }
+    } catch (e: any) {
+      addNotification(`Error al activar notificaciones: ${e.message || e}`, 'error');
+    } finally {
+      setIsPushSubscribing(false);
+    }
+  };
+
+  const handleTestNotification = async () => {
+    playChimeSound('check');
+    if (isNotificationSupported() && pushStatus === 'granted') {
+      await showLocalNotification('Prueba de Pareja 🛒', {
+        body: '¡Tu pareja marcó: Leche Entera (2 unidades)!',
+        soundType: 'check'
+      });
+      addNotification('¡Notificación de prueba enviada!', 'success');
+    } else {
+      addNotification('Sonido reproducido. Activa las notificaciones para ver la alerta del sistema.', 'info');
+    }
+  };
   
   // Dialog State
   const [promptConfig, setPromptConfig] = useState<{
@@ -1082,16 +1160,48 @@ export default function App() {
   }, [profile?.familyId]);
 
   // Sync Activities (Explicitly filter by familyId)
+  const isInitialActivitiesLoad = useRef(true);
   useEffect(() => {
     if (!profile?.familyId) return;
     const q = query(
       activitiesCollection, 
       where('familyId', '==', profile.familyId),
-      // Eliminamos orderBy temporalmente para evitar el error de índice falta
       // Traemos más actividades para tener mejor memoria de categorización
       limit(100)
     );
     return onSnapshot(q, (snapshot) => {
+      // Si no es la primera carga inicial, avisar a la pareja cuando se agregue o marque un producto
+      if (!isInitialActivitiesLoad.current) {
+        snapshot.docChanges().forEach((change) => {
+          if (change.type === 'added') {
+            const data = change.doc.data() as ActivityItem;
+            // Solo si la acción la realizó la pareja (no nosotros mismos)
+            if (data.userId && data.userId !== profile.uid) {
+              const partnerName = data.userName || 'Tu pareja';
+              const actionVerb = data.type === 'check' 
+                ? 'marcó como comprado' 
+                : data.type === 'add' 
+                  ? 'agregó a la lista' 
+                  : 'actualizó';
+              const title = data.type === 'check' 
+                ? `✅ ${data.itemName} comprado` 
+                : `🛒 Nuevo producto en tu lista`;
+              const body = `${partnerName} ${actionVerb}: ${data.itemName}`;
+              
+              showLocalNotification(title, {
+                body,
+                soundType: data.type === 'check' ? 'check' : 'add',
+                tag: `activity-${change.doc.id}`
+              });
+
+              addNotification(body, data.type === 'check' ? 'success' : 'info');
+            }
+          }
+        });
+      } else {
+        isInitialActivitiesLoad.current = false;
+      }
+
       const fetched = snapshot.docs.map(d => ({ id: d.id, ...d.data() })) as ActivityItem[];
       // Ordenamos en memoria para no requerir índice compuesto en Firestore
       const sorted = [...fetched].sort((a, b) => {
@@ -1103,7 +1213,7 @@ export default function App() {
     }, (err) => {
       addLog(`Aviso Actividades: ${err.message || err.code}`);
     });
-  }, [profile?.familyId]);
+  }, [profile?.familyId, profile?.uid]);
 
   // Sync History
   useEffect(() => {
@@ -1215,6 +1325,7 @@ export default function App() {
     if (!profile) return;
     await addDoc(activitiesCollection, { 
       userId: profile.uid, 
+      userName: profile.displayName || 'Tu pareja',
       type, 
       itemName, 
       category: category || 'Otros', // Evitar undefined que causa error en Firestore
@@ -2261,6 +2372,25 @@ export default function App() {
                   >
                     <Users className="w-3.5 h-3.5" />
                   </button>
+                  <button 
+                    onClick={() => setIsPushModalOpen(true)}
+                    className={cn(
+                      "p-1.5 rounded-lg transition-colors relative",
+                      pushStatus === 'granted' 
+                        ? "text-emerald-600 hover:bg-emerald-50 bg-emerald-50/50" 
+                        : "text-text-secondary hover:bg-gray-100"
+                    )}
+                    title={pushStatus === 'granted' ? "Notificaciones Push Activas" : "Configurar Notificaciones Push"}
+                  >
+                    {pushStatus === 'granted' ? (
+                      <BellRing className="w-3.5 h-3.5 text-emerald-600" />
+                    ) : (
+                      <Bell className="w-3.5 h-3.5" />
+                    )}
+                    {pushStatus === 'granted' && (
+                      <span className="absolute top-1 right-1 w-1.5 h-1.5 rounded-full bg-emerald-500 ring-1 ring-white" />
+                    )}
+                  </button>
                 </div>
               </div>
 
@@ -2699,6 +2829,61 @@ export default function App() {
                     </button>
                   </div>
                 </div>
+                <div className="bg-gray-50/80 border border-border rounded-2xl p-5 space-y-4">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2.5">
+                      <div className={cn(
+                        "w-8 h-8 rounded-xl flex items-center justify-center transition-colors",
+                        pushStatus === 'granted' ? "bg-emerald-100 text-emerald-600" : "bg-gray-200 text-text-secondary"
+                      )}>
+                        {pushStatus === 'granted' ? <BellRing className="w-4 h-4" /> : <Bell className="w-4 h-4" />}
+                      </div>
+                      <div>
+                        <p className="text-[12px] font-black text-text-main">Avisos Push de Pareja</p>
+                        <p className="text-[10px] text-text-secondary">
+                          {pushStatus === 'granted' ? 'Activadas en este dispositivo' : 'Desactivadas o pendientes'}
+                        </p>
+                      </div>
+                    </div>
+                    <span className={cn(
+                      "text-[9px] font-black px-2 py-0.5 rounded-full uppercase tracking-wider",
+                      pushStatus === 'granted' ? "bg-emerald-100 text-emerald-700" : "bg-amber-100 text-amber-700"
+                    )}>
+                      {pushStatus === 'granted' ? 'Activo' : 'Inactivo'}
+                    </span>
+                  </div>
+
+                  <p className="text-[11px] text-text-secondary leading-relaxed">
+                    Recibe avisos inmediatos en tu pantalla cuando tu pareja agregue o marque un producto en tiempo real, incluso con la app en segundo plano.
+                  </p>
+
+                  <div className="flex flex-col gap-2 pt-1">
+                    <button
+                      onClick={handleTogglePushNotifications}
+                      disabled={isPushSubscribing}
+                      className={cn(
+                        "w-full py-2.5 rounded-xl font-black text-[10px] uppercase tracking-widest transition-all flex items-center justify-center gap-2 active:scale-98",
+                        pushStatus === 'granted'
+                          ? "bg-white border border-border text-text-main hover:bg-gray-50"
+                          : "bg-accent text-white shadow-md shadow-accent/20 hover:opacity-95"
+                      )}
+                    >
+                      {isPushSubscribing ? (
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      ) : (
+                        <Bell className="w-3.5 h-3.5" />
+                      )}
+                      {pushStatus === 'granted' ? 'Re-sincronizar Notificaciones' : 'Activar Notificaciones Push'}
+                    </button>
+
+                    <button
+                      onClick={handleTestNotification}
+                      className="w-full py-2 bg-white border border-border text-text-secondary hover:text-text-main rounded-xl font-bold text-[10px] uppercase tracking-wider transition-colors flex items-center justify-center gap-1.5"
+                    >
+                      <Sparkles className="w-3 h-3 text-accent" /> Probar Sonido y Notificación
+                    </button>
+                  </div>
+                </div>
               </div>
 
               {/* Account Actions */}
@@ -2729,6 +2914,89 @@ export default function App() {
                    <p className="text-[8px] text-text-secondary/50 font-mono italic">v2.1.3 • AI Powered</p>
                 </div>
               </div>
+            </div>
+          </motion.div>
+        </div>
+      )}
+
+      {/* Push Notifications Modal */}
+      {isPushModalOpen && (
+        <div className="fixed inset-0 z-[300] flex items-center justify-center p-4">
+          <motion.div 
+             initial={{ opacity: 0 }} 
+             animate={{ opacity: 1 }} 
+             exit={{ opacity: 0 }}
+             onClick={() => setIsPushModalOpen(false)}
+             className="absolute inset-0 bg-black/60 backdrop-blur-sm" 
+          />
+          <motion.div 
+            initial={{ opacity: 0, scale: 0.9, y: 20 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            className="bg-white w-full max-w-md rounded-[32px] overflow-hidden shadow-2xl relative z-10 flex flex-col p-6 space-y-5"
+          >
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-2xl bg-accent/10 text-accent flex items-center justify-center">
+                  <BellRing className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-lg font-black text-text-main tracking-tight">Notificaciones de Pareja</h3>
+                  <p className="text-[10px] font-bold text-text-secondary uppercase tracking-wider">Firebase Cloud Messaging</p>
+                </div>
+              </div>
+              <button 
+                onClick={() => setIsPushModalOpen(false)}
+                className="p-2 hover:bg-gray-50 rounded-xl transition-colors text-text-secondary"
+              >
+                <Plus className="w-5 h-5 rotate-45" />
+              </button>
+            </div>
+
+            <div className="bg-emerald-50/70 border border-emerald-200/60 rounded-2xl p-4 text-emerald-900 text-xs leading-relaxed space-y-1">
+              <p className="font-bold flex items-center gap-1.5 text-emerald-800">
+                <CheckCircle2 className="w-4 h-4 text-emerald-600" /> Sincronización instantánea
+              </p>
+              <p className="text-[11px] text-emerald-700">
+                Cuando estés en casa y tu pareja en el supermercado marcando productos, recibirás una notificación al momento para no comprar cosas repetidas.
+              </p>
+            </div>
+
+            <div className="space-y-3">
+              <div className="flex items-center justify-between px-3 py-2 bg-gray-50 rounded-xl text-xs font-semibold text-text-secondary">
+                <span>Estado actual:</span>
+                <span className={cn(
+                  "font-black uppercase text-[10px] px-2 py-0.5 rounded-full",
+                  pushStatus === 'granted' ? "bg-emerald-100 text-emerald-700" : "bg-amber-100 text-amber-700"
+                )}>
+                  {pushStatus === 'granted' ? 'Habilitadas' : pushStatus === 'denied' ? 'Bloqueadas por el navegador' : 'No configuradas'}
+                </span>
+              </div>
+
+              {pushStatus === 'denied' && (
+                <p className="text-[10px] text-red-600 bg-red-50 p-3 rounded-xl leading-relaxed">
+                  ⚠️ Las notificaciones están denegadas en los ajustes de tu navegador. Haz clic en el ícono de candado junto a la URL y selecciona "Permitir notificaciones".
+                </p>
+              )}
+
+              <button
+                onClick={handleTogglePushNotifications}
+                disabled={isPushSubscribing}
+                className="w-full py-3.5 bg-accent text-white rounded-2xl font-black text-xs uppercase tracking-widest shadow-lg shadow-accent/25 hover:opacity-95 active:scale-98 transition-all flex items-center justify-center gap-2"
+              >
+                {isPushSubscribing ? (
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                ) : (
+                  <Bell className="w-4 h-4" />
+                )}
+                {pushStatus === 'granted' ? 'Actualizar Permisos' : 'Activar Notificaciones'}
+              </button>
+
+              <button
+                onClick={handleTestNotification}
+                className="w-full py-3 bg-white border border-border text-text-main hover:bg-gray-50 rounded-2xl font-bold text-xs uppercase tracking-wider transition-colors flex items-center justify-center gap-2"
+              >
+                <Sparkles className="w-4 h-4 text-accent" /> Probar Alerta y Sonido
+              </button>
             </div>
           </motion.div>
         </div>

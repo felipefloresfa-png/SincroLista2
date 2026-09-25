@@ -8,7 +8,9 @@
         "uid": { "type": "string" },
         "displayName": { "type": "string" },
         "familyId": { "type": "string" },
-        "photoURL": { "type": "string" }
+        "photoURL": { "type": "string" },
+        "fcmToken": { "type": "string" },
+        "pushNotificationsEnabled": { "type": "boolean" }
       },
       "required": ["uid", "displayName", "familyId"]
     },
