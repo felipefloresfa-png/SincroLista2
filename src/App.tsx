@@ -121,7 +121,9 @@ import {
   getNotificationPermission, 
   isNotificationSupported, 
   listenToForegroundMessages,
-  NotificationPermissionStatus 
+  NotificationPermissionStatus,
+  isIOS,
+  isStandalone
 } from './lib/notifications';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
@@ -743,8 +745,20 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (typeof window !== 'undefined') {
-      setPushStatus(getNotificationPermission());
+    const isSavedActive = typeof window !== 'undefined' && (
+      localStorage.getItem('sincrolista_notifications_active') === 'true' || 
+      profile?.pushNotificationsEnabled === true
+    );
+    const nativePerm = getNotificationPermission();
+
+    if (nativePerm === 'granted') {
+      setPushStatus('granted');
+    } else if (nativePerm === 'denied') {
+      setPushStatus('denied');
+    } else if (isSavedActive) {
+      setPushStatus('granted');
+    } else {
+      setPushStatus('default');
     }
 
     const unsubPromise = listenToForegroundMessages((payload) => {
@@ -756,7 +770,7 @@ export default function App() {
     return () => {
       unsubPromise.then(unsub => unsub?.());
     };
-  }, []);
+  }, [profile?.pushNotificationsEnabled]);
 
   const [testBanner, setTestBanner] = useState<{
     title: string;
@@ -786,20 +800,40 @@ export default function App() {
         });
         setProfile(prev => prev ? ({ ...prev, ...updates }) : null);
       }
+      try {
+        localStorage.setItem('sincrolista_notifications_active', 'true');
+      } catch {}
 
       if (result.permission === 'granted') {
-        addNotification('¡Notificaciones y sonido activados correctamente!', 'success');
-        await showLocalNotification('SincroLista 🛒', {
-          body: '¡Listo! Te avisaremos cuando tu pareja agregue o marque productos.',
-          soundType: 'general'
+        // Banner animado de confirmación en la app
+        setTestBanner({
+          title: '🔔 ¡Alertas y Sonido Activados!',
+          body: result.nativeSupported 
+            ? 'Notificaciones del sistema y sonido sincronizados en este dispositivo.'
+            : 'Alertas en pantalla y sonidos en vivo activos cada vez que tu pareja interactúe.',
+          time: new Date().toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' })
         });
+        setTimeout(() => setTestBanner(null), 5000);
+
+        if (result.nativeSupported) {
+          addNotification('¡Notificaciones del sistema y sonido activados correctamente!', 'success');
+          await showLocalNotification('SincroLista 🛒', {
+            body: '¡Listo! Te avisaremos cuando tu pareja agregue o marque productos.',
+            soundType: 'general'
+          });
+        } else {
+          addNotification('¡Alertas sonoras y en vivo activadas con éxito!', 'success');
+          if (result.isIOS && !result.isStandalone) {
+            addNotification('💡 Tip iPhone: Pulsa Compartir (⎋) y "Agregar a inicio" para alertas con pantalla bloqueada.', 'info');
+          }
+        }
       } else if (result.permission === 'denied') {
-        addNotification('Permiso bloqueado en el navegador. Haz clic en el candado junto a la URL para permitirlo.', 'error');
+        addNotification('Permiso del sistema bloqueado en el navegador, pero las alertas sonoras y en pantalla seguirán activas dentro de la app.', 'warning');
       } else {
         addNotification(result.error || 'Ajuste de notificaciones completado.', 'info');
       }
     } catch (e: any) {
-      addNotification(`Aviso: ${e.message || e}`, 'error');
+      addNotification(`Aviso: ${e.message || e}`, 'info');
     } finally {
       setIsPushSubscribing(false);
     }
@@ -809,8 +843,9 @@ export default function App() {
     // Reproducir de inmediato el sonido
     await playChimeSound('check');
 
-    const testTitle = 'SincroLista • Tu Pareja 🛒';
-    const testBody = '¡Camila acaba de marcar: Leche Entera (2 un) como comprada!';
+    const partnerName = syncedUsers.find(u => u.uid !== profile?.uid)?.displayName || 'Tu Pareja';
+    const testTitle = `SincroLista • ${partnerName} 🛒`;
+    const testBody = `¡${partnerName} acaba de marcar: Leche Entera (2 un) como comprada!`;
 
     // Banner flotante superior
     setTestBanner({
@@ -826,12 +861,10 @@ export default function App() {
     addNotification('🔔 ¡Alerta de prueba activada con sonido y notificación!', 'success');
 
     // Notificación del sistema si está habilitado
-    if (isNotificationSupported() && pushStatus === 'granted') {
-      await showLocalNotification(testTitle, {
-        body: testBody,
-        soundType: 'check'
-      });
-    }
+    await showLocalNotification(testTitle, {
+      body: testBody,
+      soundType: 'check'
+    });
   };
   
   // Dialog State
@@ -1227,6 +1260,16 @@ export default function App() {
               });
 
               addNotification(body, data.type === 'check' ? 'success' : 'info');
+
+              // Alerta flotante animada en pantalla
+              setTestBanner({
+                title: data.type === 'check' ? `✅ ${partnerName} compró` : `🛒 ${partnerName} agregó`,
+                body: `${data.itemName}`,
+                time: new Date().toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' })
+              });
+              setTimeout(() => {
+                setTestBanner(null);
+              }, 5500);
             }
           }
         });
@@ -2931,15 +2974,24 @@ export default function App() {
                   </div>
 
                   <p className="text-[11px] text-text-secondary leading-relaxed">
-                    Recibe avisos inmediatos en tu pantalla cuando tu pareja agregue o marque un producto en tiempo real, incluso con la app en segundo plano.
+                    Recibe avisos inmediatos en tu pantalla y tonos cuando tu pareja agregue o marque productos en tiempo real.
                   </p>
+
+                  {isIOS() && !isStandalone() && (
+                    <div className="bg-sky-50 border border-sky-200/80 rounded-xl p-3 text-[10px] text-sky-950 leading-relaxed">
+                      <p className="font-bold flex items-center gap-1.5 text-sky-900 mb-0.5">
+                        📲 Tip para iPhone:
+                      </p>
+                      Para recibir avisos con la pantalla apagada, pulsa el botón <strong>Compartir (⎋)</strong> de Safari y selecciona <strong>«Agregar a la pantalla de inicio»</strong>.
+                    </div>
+                  )}
 
                   <div className="flex flex-col gap-2 pt-1">
                     <button
                       onClick={handleTogglePushNotifications}
                       disabled={isPushSubscribing}
                       className={cn(
-                        "w-full py-2.5 rounded-xl font-black text-[10px] uppercase tracking-widest transition-all flex items-center justify-center gap-2 active:scale-98",
+                        "w-full py-2.5 rounded-xl font-black text-[10px] uppercase tracking-widest transition-all flex items-center justify-center gap-2 active:scale-98 cursor-pointer",
                         pushStatus === 'granted'
                           ? "bg-white border border-border text-text-main hover:bg-gray-50"
                           : "bg-accent text-white shadow-md shadow-accent/20 hover:opacity-95"
@@ -2950,12 +3002,12 @@ export default function App() {
                       ) : (
                         <Bell className="w-3.5 h-3.5" />
                       )}
-                      {pushStatus === 'granted' ? 'Re-sincronizar Notificaciones' : 'Activar Notificaciones Push'}
+                      {pushStatus === 'granted' ? 'Re-sincronizar y Probar Alertas' : 'Activar Alertas de Pareja y Sonido'}
                     </button>
 
                     <button
                       onClick={handleTestNotification}
-                      className="w-full py-2 bg-white border border-border text-text-secondary hover:text-text-main rounded-xl font-bold text-[10px] uppercase tracking-wider transition-colors flex items-center justify-center gap-1.5"
+                      className="w-full py-2 bg-white border border-border text-text-secondary hover:text-text-main rounded-xl font-bold text-[10px] uppercase tracking-wider transition-colors flex items-center justify-center gap-1.5 cursor-pointer active:scale-98"
                     >
                       <Sparkles className="w-3 h-3 text-accent" /> Probar Sonido y Notificación
                     </button>
@@ -3043,16 +3095,35 @@ export default function App() {
                 <span>Estado del sistema:</span>
                 <span className={cn(
                   "font-black uppercase text-[10px] px-2.5 py-0.5 rounded-full",
-                  pushStatus === 'granted' ? "bg-emerald-100 text-emerald-700" : pushStatus === 'denied' ? "bg-red-100 text-red-700" : "bg-amber-100 text-amber-700"
+                  pushStatus === 'granted' ? "bg-emerald-100 text-emerald-700" : pushStatus === 'denied' ? "bg-amber-100 text-amber-800" : "bg-blue-100 text-blue-700"
                 )}>
-                  {pushStatus === 'granted' ? 'Alertas y Sonido Activos' : pushStatus === 'denied' ? 'Bloqueadas en navegador' : 'Listo para activar'}
+                  {pushStatus === 'granted' ? 'Alertas y Sonido Activos' : pushStatus === 'denied' ? 'Sonido y Pantalla Activos' : 'Listo para activar'}
                 </span>
               </div>
 
+              {isIOS() && !isStandalone() && (
+                <div className="bg-sky-50 border border-sky-200/80 rounded-2xl p-3 text-[11px] text-sky-950 leading-relaxed flex items-start gap-2.5">
+                  <span className="text-base leading-none">📲</span>
+                  <div>
+                    <p className="font-bold text-sky-900 text-xs">Tip para iPhone:</p>
+                    <p className="text-[10px] text-sky-800 mt-0.5 leading-normal">
+                      Para recibir avisos con la pantalla apagada, pulsa el botón <strong>Compartir (⎋)</strong> de Safari y selecciona <strong>«Agregar a la pantalla de inicio»</strong>.
+                    </p>
+                  </div>
+                </div>
+              )}
+
               {pushStatus === 'denied' && (
-                <p className="text-[10px] text-red-600 bg-red-50 p-3 rounded-xl leading-relaxed">
-                  ⚠️ Las notificaciones nativas están denegadas en los ajustes del navegador. Haz clic en el ícono del candado junto a la barra de direcciones y selecciona "Permitir". Las alertas sonoras y en pantalla seguirán funcionando.
+                <p className="text-[10px] text-amber-800 bg-amber-50 border border-amber-200/60 p-3 rounded-xl leading-relaxed">
+                  ℹ️ Las notificaciones nativas del sistema están desactivadas en los ajustes del navegador, pero las <strong>alertas sonoras y en pantalla dentro de la app funcionan al 100%</strong>.
                 </p>
+              )}
+
+              {pushStatus === 'granted' && (
+                <div className="bg-emerald-50/80 border border-emerald-200/60 rounded-xl p-2.5 flex items-center gap-2 text-[11px] text-emerald-800 font-medium">
+                  <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                  <span>Sonidos alegres y carteles flotantes listos para cada compra.</span>
+                </div>
               )}
 
               <button
@@ -3065,7 +3136,7 @@ export default function App() {
                 ) : (
                   <Bell className="w-4 h-4" />
                 )}
-                {pushStatus === 'granted' ? 'Sincronizar y Verificar Notificaciones' : 'Activar Notificaciones de Pareja'}
+                {pushStatus === 'granted' ? 'Re-sincronizar y Probar Alertas' : 'Activar Alertas de Pareja'}
               </button>
 
               <button

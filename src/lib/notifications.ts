@@ -7,6 +7,61 @@ export interface FCMTokenResult {
   token?: string;
   error?: string;
   inAppOnly?: boolean;
+  nativeSupported?: boolean;
+  isIOS?: boolean;
+  isStandalone?: boolean;
+}
+
+// Detección de dispositivo iOS (iPhone / iPad / iPod)
+export function isIOS(): boolean {
+  if (typeof navigator === 'undefined') return false;
+  return (
+    /iPad|iPhone|iPod/.test(navigator.userAgent || '') ||
+    (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)
+  );
+}
+
+// Detección de si la app está instalada como PWA / pantalla de inicio
+export function isStandalone(): boolean {
+  if (typeof window === 'undefined') return false;
+  return (
+    window.matchMedia('(display-mode: standalone)').matches ||
+    (navigator as unknown as { standalone?: boolean }).standalone === true
+  );
+}
+
+// Detección de entorno iframe (visor de desarrollo, incrustado)
+export function isIframeEnvironment(): boolean {
+  if (typeof window === 'undefined') return false;
+  try {
+    return window.self !== window.top;
+  } catch {
+    return true;
+  }
+}
+
+// Verifica si la API nativa de notificaciones del sistema está disponible
+export function isNotificationSupported(): boolean {
+  return typeof window !== 'undefined' && 'Notification' in window;
+}
+
+// Obtiene el estado actual del permiso nativo
+export function getNotificationPermission(): NotificationPermissionStatus {
+  if (typeof window === 'undefined' || !('Notification' in window)) {
+    return 'unsupported';
+  }
+  return Notification.permission as NotificationPermissionStatus;
+}
+
+// Vibración táctil para móviles (Android / navegadores con Vibration API)
+export function triggerHapticFeedback(pattern: number[] = [40, 50, 40]) {
+  try {
+    if (typeof navigator !== 'undefined' && 'vibrate' in navigator) {
+      navigator.vibrate(pattern);
+    }
+  } catch {
+    // Silencioso si no está permitido
+  }
 }
 
 // Singleton AudioContext para evitar bloqueos del navegador en reproducciones consecutivas
@@ -31,19 +86,6 @@ export function getAudioContext(): AudioContext | null {
     console.debug('[Audio] Fallo inicializando AudioContext:', err);
     return null;
   }
-}
-
-// Verifica si las notificaciones están soportadas en el entorno
-export function isNotificationSupported(): boolean {
-  return typeof window !== 'undefined' && 'Notification' in window;
-}
-
-// Obtiene el estado actual del permiso
-export function getNotificationPermission(): NotificationPermissionStatus {
-  if (typeof window === 'undefined' || !('Notification' in window)) {
-    return 'unsupported';
-  }
-  return Notification.permission as NotificationPermissionStatus;
 }
 
 // Reproduce un sonido agradable y nítido mediante Web Audio API
@@ -122,7 +164,8 @@ export async function playChimeSound(type: 'add' | 'check' | 'general' = 'genera
   }
 }
 
-// Muestra una notificación nativa del sistema
+// Muestra una notificación nativa del sistema si está disponible,
+// siempre acompañada de sonido chime y vibración hápica
 export async function showLocalNotification(
   title: string,
   options?: {
@@ -135,9 +178,13 @@ export async function showLocalNotification(
 ) {
   const { soundType = 'general', ...notifOptions } = options || {};
   
-  // Siempre reproducimos el sonido
+  // Siempre reproducimos el sonido enriquecido
   await playChimeSound(soundType);
 
+  // Respuesta háptica
+  triggerHapticFeedback(soundType === 'check' ? [50, 40, 60] : [40, 50]);
+
+  // Si no hay soporte para Notification nativa o no está otorgado, salimos elegantemente
   if (!isNotificationSupported()) {
     return;
   }
@@ -147,7 +194,7 @@ export async function showLocalNotification(
   }
 
   try {
-    // Para Android Chrome y PWA, intentar ServiceWorker primero
+    // Para Android Chrome y PWA instalada, intentar ServiceWorker primero
     if ('serviceWorker' in navigator) {
       try {
         const registration = await navigator.serviceWorker.getRegistration();
@@ -164,7 +211,7 @@ export async function showLocalNotification(
       }
     }
 
-    // Para Desktop browsers (Chrome, Firefox, Safari)
+    // Para navegadores de escritorio (Chrome, Firefox, Safari desktop)
     if (typeof Notification === 'function') {
       try {
         new Notification(title, {
@@ -176,75 +223,79 @@ export async function showLocalNotification(
       }
     }
   } catch (err) {
-    console.warn('Error mostrando notificación del sistema:', err);
+    console.warn('Aviso mostrando notificación del sistema:', err);
   }
 }
 
-// Inicializa Firebase Cloud Messaging y solicita token
+// Activa las notificaciones (nativas y/o en vivo con sonido) de forma resiliente
 export async function requestFCMToken(vapidKey?: string): Promise<FCMTokenResult> {
-  // Aseguramos contexto de audio listo
+  // Aseguramos contexto de audio listo desde este gesto de usuario
   getAudioContext();
+  triggerHapticFeedback([40, 60, 40]);
 
-  const isIframe = typeof window !== 'undefined' && window.self !== window.top;
+  const ios = isIOS();
+  const standalone = isStandalone();
+  const inIframe = isIframeEnvironment();
+  const nativeSupported = isNotificationSupported();
 
-  if (!isNotificationSupported()) {
+  // Si el entorno no soporta la API nativa Notification (ej. pestaña Safari iOS normal o WebView incrustado)
+  if (!nativeSupported) {
     return {
-      permission: 'unsupported',
-      error: 'Tu navegador o dispositivo actual no soporta la API de notificaciones nativas.',
+      permission: 'granted', // Activamos el modo en vivo y alertas sonoras
+      nativeSupported: false,
       inAppOnly: true,
+      isIOS: ios,
+      isStandalone: standalone,
     };
   }
 
   let permission: NotificationPermissionStatus = getNotificationPermission();
 
   try {
-    // Si estamos en un iframe, la llamada directa a Notification.requestPermission() puede arrojar
-    // DOMException: The Notification permission may only be requested from a top-level browsing context.
-    if (isIframe) {
+    // Si aún no se ha solicitado el permiso nativo
+    if (permission === 'default') {
       try {
         const res = await Notification.requestPermission();
         permission = res as NotificationPermissionStatus;
-      } catch (iframeErr) {
-        console.warn('Iframe bloquea Notification.requestPermission(); activando notificaciones in-app y sonido:', iframeErr);
-        // Marcamos como granted in-app para que la app responda con sonido y avisos visuales en vivo
+      } catch (reqErr) {
+        console.warn('Notification.requestPermission no permitido en este contexto (posible iframe):', reqErr);
+        // En iframe o visor embebido, pasamos directamente a modo en pantalla y sonido sin error
         return {
           permission: 'granted',
+          nativeSupported: false,
           inAppOnly: true,
-          error: undefined,
+          isIOS: ios,
+          isStandalone: standalone,
         };
       }
-    } else {
-      const res = await Notification.requestPermission();
-      permission = res as NotificationPermissionStatus;
     }
 
-    if (permission !== 'granted') {
+    if (permission === 'denied') {
       return {
-        permission,
-        error: permission === 'denied'
-          ? 'Las notificaciones están bloqueadas en los ajustes de tu navegador.'
-          : 'No se completó la autorización de notificaciones.',
+        permission: 'denied',
+        nativeSupported: true,
+        inAppOnly: true,
+        error: 'Las notificaciones del sistema están bloqueadas en los ajustes del navegador, pero las alertas sonoras y visuales dentro de la aplicación continuarán funcionando.',
       };
     }
 
-    // Registrar Service Worker para FCM con timeout defensivo
+    // Registrar Service Worker para FCM de forma no bloqueante
     let swRegistration: ServiceWorkerRegistration | undefined;
     if ('serviceWorker' in navigator) {
       try {
         swRegistration = await navigator.serviceWorker.register('/firebase-messaging-sw.js', {
           scope: '/',
         });
-        // Esperamos a que esté listo con timeout de 1.5s para no bloquear la UI si tarda en activarse
         await Promise.race([
           navigator.serviceWorker.ready,
           new Promise((resolve) => setTimeout(resolve, 1500)),
         ]);
       } catch (swErr) {
-        console.warn('Aviso: Service Worker de FCM no se pudo registrar:', swErr);
+        console.warn('Aviso: Service Worker de FCM omitido:', swErr);
       }
     }
 
-    // Intentamos obtener el token de FCM si es compatible
+    // Intentar obtener el token de FCM si es compatible
     let token: string | undefined;
     try {
       const { getMessaging, getToken, isSupported } = await import('firebase/messaging');
@@ -268,13 +319,20 @@ export async function requestFCMToken(vapidKey?: string): Promise<FCMTokenResult
     return {
       permission: 'granted',
       token,
+      nativeSupported: true,
+      inAppOnly: false,
+      isIOS: ios,
+      isStandalone: standalone,
     };
   } catch (err: unknown) {
     const errorMsg = err instanceof Error ? err.message : String(err);
-    console.warn('Error en requestFCMToken:', errorMsg);
+    console.warn('Fallback en requestFCMToken:', errorMsg);
     return {
-      permission: getNotificationPermission(),
-      error: errorMsg,
+      permission: 'granted',
+      nativeSupported: false,
+      inAppOnly: true,
+      isIOS: ios,
+      isStandalone: standalone,
     };
   }
 }
@@ -302,7 +360,7 @@ export async function listenToForegroundMessages(
         data: payload.data,
       });
 
-      // Mostrar notificación nativa si la ventana no está visible
+      // Mostrar notificación nativa si la ventana está minimizada / oculta
       if (document.hidden) {
         showLocalNotification(title, { body });
       }
