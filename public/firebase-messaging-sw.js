@@ -1,6 +1,18 @@
 // Scripts de Firebase compat para Service Worker (FCM)
-importScripts('https://www.gstatic.com/firebasejs/10.14.0/firebase-app-compat.js');
-importScripts('https://www.gstatic.com/firebasejs/10.14.0/firebase-messaging-compat.js');
+self.addEventListener('install', (event) => {
+  self.skipWaiting();
+});
+
+self.addEventListener('activate', (event) => {
+  event.waitUntil(self.clients.claim());
+});
+
+try {
+  importScripts('https://www.gstatic.com/firebasejs/10.14.0/firebase-app-compat.js');
+  importScripts('https://www.gstatic.com/firebasejs/10.14.0/firebase-messaging-compat.js');
+} catch (importErr) {
+  console.warn('[firebase-messaging-sw.js] Fallo al cargar scripts externos de Firebase:', importErr);
+}
 
 const firebaseConfig = {
   apiKey: "AIzaSyBbxbElROcFiJ4LoBnFEpOjjlzeHX2KejE",

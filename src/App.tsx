@@ -398,7 +398,7 @@ interface Notification {
 
 function ToastContainer({ notifications, onDismiss }: { notifications: Notification[], onDismiss: (id: string) => void }) {
   return (
-    <div className="fixed bottom-24 left-1/2 -translate-x-1/2 z-[100] w-full max-w-[320px] px-4 space-y-2 pointer-events-none">
+    <div className="fixed bottom-24 left-1/2 -translate-x-1/2 z-[500] w-full max-w-[340px] px-4 space-y-2 pointer-events-none">
       <AnimatePresence>
         {notifications.map((n) => (
           <motion.div
@@ -758,47 +758,79 @@ export default function App() {
     };
   }, []);
 
+  const [testBanner, setTestBanner] = useState<{
+    title: string;
+    body: string;
+    time: string;
+  } | null>(null);
+
   const handleTogglePushNotifications = async () => {
-    if (!profile) return;
     setIsPushSubscribing(true);
     try {
+      // Activar contexto de audio con este gesto de usuario
+      await playChimeSound('add');
+
       const result = await requestFCMToken();
       setPushStatus(result.permission);
-      if (result.permission === 'granted') {
+
+      const currentUid = profile?.uid || user?.uid;
+      if (currentUid && result.permission === 'granted') {
         const updates: any = {
           pushNotificationsEnabled: true
         };
         if (result.token) {
           updates.fcmToken = result.token;
         }
-        await updateDoc(doc(db, 'users', profile.uid), updates);
+        await updateDoc(doc(db, 'users', currentUid), updates).catch(err => {
+          console.warn('Error al actualizar fcmToken en Firestore:', err);
+        });
         setProfile(prev => prev ? ({ ...prev, ...updates }) : null);
-        playChimeSound('add');
-        addNotification('¡Notificaciones push activadas correctamente!', 'success');
-        showLocalNotification('SincroLista 🛒', {
+      }
+
+      if (result.permission === 'granted') {
+        addNotification('¡Notificaciones y sonido activados correctamente!', 'success');
+        await showLocalNotification('SincroLista 🛒', {
           body: '¡Listo! Te avisaremos cuando tu pareja agregue o marque productos.',
           soundType: 'general'
         });
       } else if (result.permission === 'denied') {
-        addNotification('Permiso denegado en el navegador. Habilítalo en la barra de direcciones.', 'error');
+        addNotification('Permiso bloqueado en el navegador. Haz clic en el candado junto a la URL para permitirlo.', 'error');
+      } else {
+        addNotification(result.error || 'Ajuste de notificaciones completado.', 'info');
       }
     } catch (e: any) {
-      addNotification(`Error al activar notificaciones: ${e.message || e}`, 'error');
+      addNotification(`Aviso: ${e.message || e}`, 'error');
     } finally {
       setIsPushSubscribing(false);
     }
   };
 
   const handleTestNotification = async () => {
-    playChimeSound('check');
+    // Reproducir de inmediato el sonido
+    await playChimeSound('check');
+
+    const testTitle = 'SincroLista • Tu Pareja 🛒';
+    const testBody = '¡Camila acaba de marcar: Leche Entera (2 un) como comprada!';
+
+    // Banner flotante superior
+    setTestBanner({
+      title: testTitle,
+      body: testBody,
+      time: new Date().toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' })
+    });
+    setTimeout(() => {
+      setTestBanner(null);
+    }, 5000);
+
+    // Toast visible
+    addNotification('🔔 ¡Alerta de prueba activada con sonido y notificación!', 'success');
+
+    // Notificación del sistema si está habilitado
     if (isNotificationSupported() && pushStatus === 'granted') {
-      await showLocalNotification('Prueba de Pareja 🛒', {
-        body: '¡Tu pareja marcó: Leche Entera (2 unidades)!',
+      await showLocalNotification(testTitle, {
+        body: testBody,
         soundType: 'check'
       });
-      addNotification('¡Notificación de prueba enviada!', 'success');
-    } else {
-      addNotification('Sonido reproducido. Activa las notificaciones para ver la alerta del sistema.', 'info');
     }
   };
   
@@ -2157,6 +2189,32 @@ export default function App() {
 
           <div className="mt-8 space-y-2 pb-8">
             <button 
+              onClick={() => { setIsPushModalOpen(true); setIsSidebarOpen(false); }} 
+              className="w-full flex items-center justify-between px-3 py-2 text-text-secondary hover:bg-gray-50 rounded-xl transition-colors font-semibold text-xs group border border-border/50"
+            >
+              <div className="flex items-center gap-2.5">
+                <div className={cn(
+                  "w-7 h-7 rounded-lg flex items-center justify-center transition-colors",
+                  pushStatus === 'granted' ? "bg-emerald-50 text-emerald-600" : "bg-gray-100 text-text-secondary"
+                )}>
+                  {pushStatus === 'granted' ? <BellRing className="w-3.5 h-3.5" /> : <Bell className="w-3.5 h-3.5" />}
+                </div>
+                <div className="text-left">
+                  <p className="leading-tight font-bold text-text-main text-[11px]">Notificaciones</p>
+                  <p className="text-[9px] text-text-secondary">
+                    {pushStatus === 'granted' ? 'Alertas activas' : 'Configurar avisos'}
+                  </p>
+                </div>
+              </div>
+              <span className={cn(
+                "text-[8px] font-black px-2 py-0.5 rounded-full uppercase tracking-wider",
+                pushStatus === 'granted' ? "bg-emerald-100 text-emerald-700" : "bg-gray-100 text-text-secondary"
+              )}>
+                {pushStatus === 'granted' ? 'Activo' : 'Ajustar'}
+              </span>
+            </button>
+
+            <button 
               onClick={() => { setIsSettingsOpen(true); setIsSidebarOpen(false); }} 
               className="w-full flex items-center gap-3 px-3 py-2.5 text-text-secondary hover:bg-gray-50 rounded-xl transition-colors font-semibold text-sm group"
             >
@@ -2340,6 +2398,25 @@ export default function App() {
                 <p className="text-[9px] text-accent uppercase font-black tracking-widest">Sincrolista</p>
               </div>
               <div className="flex items-center gap-1.5">
+                <button 
+                  onClick={() => setIsPushModalOpen(true)} 
+                  className={cn(
+                    "p-2 rounded-xl shadow-sm border transition-all active:scale-95 relative",
+                    pushStatus === 'granted' 
+                      ? "bg-emerald-50 border-emerald-200 text-emerald-600" 
+                      : "bg-white border-border text-text-secondary"
+                  )}
+                  title="Notificaciones"
+                >
+                  {pushStatus === 'granted' ? (
+                    <BellRing className="w-5 h-5 text-emerald-600" />
+                  ) : (
+                    <Bell className="w-5 h-5" />
+                  )}
+                  {pushStatus === 'granted' && (
+                    <span className="absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-emerald-500 ring-1 ring-white" />
+                  )}
+                </button>
                 <button onClick={() => setShoppingMode(!shoppingMode)} className={cn("p-2 rounded-xl shadow-sm border transition-all active:scale-95", shoppingMode ? "bg-accent text-white border-accent" : "bg-white border-border text-text-secondary")}>
                   <Zap className="w-5 h-5" />
                 </button>
@@ -2963,40 +3040,68 @@ export default function App() {
 
             <div className="space-y-3">
               <div className="flex items-center justify-between px-3 py-2 bg-gray-50 rounded-xl text-xs font-semibold text-text-secondary">
-                <span>Estado actual:</span>
+                <span>Estado del sistema:</span>
                 <span className={cn(
-                  "font-black uppercase text-[10px] px-2 py-0.5 rounded-full",
-                  pushStatus === 'granted' ? "bg-emerald-100 text-emerald-700" : "bg-amber-100 text-amber-700"
+                  "font-black uppercase text-[10px] px-2.5 py-0.5 rounded-full",
+                  pushStatus === 'granted' ? "bg-emerald-100 text-emerald-700" : pushStatus === 'denied' ? "bg-red-100 text-red-700" : "bg-amber-100 text-amber-700"
                 )}>
-                  {pushStatus === 'granted' ? 'Habilitadas' : pushStatus === 'denied' ? 'Bloqueadas por el navegador' : 'No configuradas'}
+                  {pushStatus === 'granted' ? 'Alertas y Sonido Activos' : pushStatus === 'denied' ? 'Bloqueadas en navegador' : 'Listo para activar'}
                 </span>
               </div>
 
               {pushStatus === 'denied' && (
                 <p className="text-[10px] text-red-600 bg-red-50 p-3 rounded-xl leading-relaxed">
-                  ⚠️ Las notificaciones están denegadas en los ajustes de tu navegador. Haz clic en el ícono de candado junto a la URL y selecciona "Permitir notificaciones".
+                  ⚠️ Las notificaciones nativas están denegadas en los ajustes del navegador. Haz clic en el ícono del candado junto a la barra de direcciones y selecciona "Permitir". Las alertas sonoras y en pantalla seguirán funcionando.
                 </p>
               )}
 
               <button
                 onClick={handleTogglePushNotifications}
                 disabled={isPushSubscribing}
-                className="w-full py-3.5 bg-accent text-white rounded-2xl font-black text-xs uppercase tracking-widest shadow-lg shadow-accent/25 hover:opacity-95 active:scale-98 transition-all flex items-center justify-center gap-2"
+                className="w-full py-3.5 bg-accent text-white rounded-2xl font-black text-xs uppercase tracking-widest shadow-lg shadow-accent/25 hover:opacity-95 active:scale-98 transition-all flex items-center justify-center gap-2 cursor-pointer"
               >
                 {isPushSubscribing ? (
                   <Loader2 className="w-4 h-4 animate-spin" />
                 ) : (
                   <Bell className="w-4 h-4" />
                 )}
-                {pushStatus === 'granted' ? 'Actualizar Permisos' : 'Activar Notificaciones'}
+                {pushStatus === 'granted' ? 'Sincronizar y Verificar Notificaciones' : 'Activar Notificaciones de Pareja'}
               </button>
 
               <button
                 onClick={handleTestNotification}
-                className="w-full py-3 bg-white border border-border text-text-main hover:bg-gray-50 rounded-2xl font-bold text-xs uppercase tracking-wider transition-colors flex items-center justify-center gap-2"
+                className="w-full py-3 bg-white border border-border text-text-main hover:bg-gray-50 rounded-2xl font-bold text-xs uppercase tracking-wider transition-colors flex items-center justify-center gap-2 shadow-xs cursor-pointer active:scale-98"
               >
-                <Sparkles className="w-4 h-4 text-accent" /> Probar Alerta y Sonido
+                <Sparkles className="w-4 h-4 text-accent" /> Probar Alerta y Notificación en Pantalla
               </button>
+
+              <div className="pt-2 border-t border-border/60">
+                <p className="text-[10px] font-bold text-text-secondary uppercase tracking-wider mb-2">
+                  Probar efectos de sonido:
+                </p>
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      playChimeSound('check');
+                      addNotification('🎵 Sonido: Producto marcado como comprado', 'success');
+                    }}
+                    className="py-2 px-3 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 rounded-xl font-bold text-[10px] transition-colors flex items-center justify-center gap-1.5 cursor-pointer active:scale-95"
+                  >
+                    <span>✅ Marcado</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      playChimeSound('add');
+                      addNotification('🎵 Sonido: Nuevo producto agregado', 'info');
+                    }}
+                    className="py-2 px-3 bg-blue-50 hover:bg-blue-100 text-blue-800 rounded-xl font-bold text-[10px] transition-colors flex items-center justify-center gap-1.5 cursor-pointer active:scale-95"
+                  >
+                    <span>🛒 Agregado</span>
+                  </button>
+                </div>
+              </div>
             </div>
           </motion.div>
         </div>
@@ -3215,6 +3320,43 @@ export default function App() {
         .scrollbar-none { -ms-overflow-style: none; scrollbar-width: none; }
       `}</style>
       
+      {/* Floating Push Notification Banner (Simulated Native Banner) */}
+      <AnimatePresence>
+        {testBanner && (
+          <motion.div
+            initial={{ opacity: 0, y: -50, scale: 0.95 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: -40, scale: 0.95 }}
+            transition={{ type: "spring", stiffness: 400, damping: 28 }}
+            className="fixed top-4 left-1/2 -translate-x-1/2 z-[600] w-[92%] max-w-md bg-white/95 backdrop-blur-md border border-emerald-300 shadow-2xl rounded-2xl p-4 flex items-start gap-3 pointer-events-auto cursor-pointer"
+            onClick={() => setTestBanner(null)}
+          >
+            <div className="w-10 h-10 rounded-2xl bg-emerald-500 text-white flex items-center justify-center flex-none shadow-md shadow-emerald-500/20">
+              <BellRing className="w-5 h-5 animate-pulse" />
+            </div>
+            <div className="flex-grow min-w-0">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-[10px] font-black uppercase tracking-wider text-emerald-700">
+                  {testBanner.title}
+                </span>
+                <span className="text-[9px] font-mono text-text-secondary">
+                  {testBanner.time}
+                </span>
+              </div>
+              <p className="text-xs font-bold text-text-main mt-0.5 leading-snug">
+                {testBanner.body}
+              </p>
+            </div>
+            <button 
+              onClick={(e) => { e.stopPropagation(); setTestBanner(null); }}
+              className="text-text-secondary hover:text-text-main p-1"
+            >
+              <Plus className="w-4 h-4 rotate-45" />
+            </button>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       <ToastContainer 
         notifications={notifications} 
         onDismiss={(id) => setNotifications(prev => prev.filter(n => n.id !== id))} 
