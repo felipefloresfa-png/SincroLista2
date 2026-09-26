@@ -67,6 +67,38 @@ export function triggerHapticFeedback(pattern: number[] = [40, 50, 40]) {
 // Singleton AudioContext para evitar bloqueos del navegador en reproducciones consecutivas
 let sharedAudioContext: AudioContext | null = null;
 
+// Desbloquear AudioContext automáticamente en el primer toque o interacción del usuario
+if (typeof window !== 'undefined') {
+  const unlockAudio = () => {
+    try {
+      const ctx = getAudioContext();
+      if (ctx && ctx.state === 'suspended') {
+        ctx.resume().catch(() => {});
+      }
+    } catch {}
+    window.removeEventListener('click', unlockAudio);
+    window.removeEventListener('touchstart', unlockAudio);
+    window.removeEventListener('keydown', unlockAudio);
+  };
+  window.addEventListener('click', unlockAudio, { passive: true, once: true });
+  window.addEventListener('touchstart', unlockAudio, { passive: true, once: true });
+  window.addEventListener('keydown', unlockAudio, { passive: true, once: true });
+}
+
+// Auto-registrar Service Worker si está soportado para que showNotification esté disponible de inmediato
+if (typeof window !== 'undefined' && 'serviceWorker' in navigator) {
+  const registerSW = () => {
+    navigator.serviceWorker
+      .register('/firebase-messaging-sw.js', { scope: '/' })
+      .catch((err) => console.debug('Auto SW register omitido:', err));
+  };
+  if (document.readyState === 'complete') {
+    registerSW();
+  } else {
+    window.addEventListener('load', registerSW, { once: true });
+  }
+}
+
 export function getAudioContext(): AudioContext | null {
   try {
     if (typeof window === 'undefined') return null;
@@ -194,16 +226,24 @@ export async function showLocalNotification(
   }
 
   try {
-    // Para Android Chrome y PWA instalada, intentar ServiceWorker primero
+    // Para Android Chrome, Safari iOS PWA y navegadores modernos, usar ServiceWorker primero
     if ('serviceWorker' in navigator) {
       try {
-        const registration = await navigator.serviceWorker.getRegistration();
-        if (registration && registration.showNotification) {
-          await registration.showNotification(title, {
+        let registration = await Promise.race([
+          navigator.serviceWorker.ready,
+          new Promise<undefined>((resolve) => setTimeout(() => resolve(undefined), 1000)),
+        ]);
+        if (!registration) {
+          registration = await navigator.serviceWorker.getRegistration();
+        }
+        if (registration && typeof registration.showNotification === 'function') {
+          const swOptions: NotificationOptions & { vibrate?: number[] } = {
             icon: '/icon-192.png',
             badge: '/badge-72.png',
+            vibrate: [200, 100, 200],
             ...notifOptions,
-          });
+          };
+          await registration.showNotification(title, swOptions as NotificationOptions);
           return;
         }
       } catch (swErr) {
@@ -211,7 +251,7 @@ export async function showLocalNotification(
       }
     }
 
-    // Para navegadores de escritorio (Chrome, Firefox, Safari desktop)
+    // Para navegadores de escritorio (Chrome, Firefox, Safari desktop) donde new Notification es compatible
     if (typeof Notification === 'function') {
       try {
         new Notification(title, {

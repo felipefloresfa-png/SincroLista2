@@ -910,28 +910,52 @@ export default function App() {
         setStatusMessage("Sincronizando perfil...");
         try {
           const userDocRef = doc(db, 'users', u.uid);
-          // Timeout agresivo para getDoc
+          // Timeout defensivo para getDoc
           const docPromise = getDoc(userDocRef);
           const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error("Conexión Firestore lenta")), 3000));
           
           const userDoc = await Promise.race([docPromise, timeoutPromise]) as any;
-          
+          const storedKnownFamily = typeof window !== 'undefined' ? localStorage.getItem('sincrolista_last_known_familyId') : null;
+          const targetFamilyId = storedKnownFamily || 'G759PE9Y';
+
           if (userDoc.exists()) {
             addLog("Perfil encontrado.");
             const data = userDoc.data() as UserProfile;
             
-            // AUTO-MIGRACIÓN: Si el código es el viejo (largo), lo actualizamos a 8 caracteres automáticamente
-            if (data.familyId && data.familyId.length > 15) {
-              const newShortId = generateShortId();
-              addLog(`Migrando código largo a nuevo código corto: ${newShortId}`);
-              updateDoc(userDocRef, { familyId: newShortId });
-              data.familyId = newShortId;
+            // Garantizar que Felipe y Valeria mantengan siempre su grupo con listas existentes (G759PE9Y)
+            const isFelipeOrPartner = (u.email && (u.email.includes('felipe') || u.email.includes('valeria'))) ||
+              (data.email && (data.email.includes('felipe') || data.email.includes('valeria'))) ||
+              (data.displayName && data.displayName.toLowerCase().includes('felipe'));
+
+            if (!data.familyId || (isFelipeOrPartner && data.familyId !== 'G759PE9Y')) {
+              addLog(`Reconectando perfil a grupo familiar principal: ${targetFamilyId}`);
+              data.familyId = targetFamilyId;
+              updateDoc(userDocRef, { familyId: targetFamilyId }).catch(() => {});
             }
             
+            try {
+              if (data.familyId) {
+                localStorage.setItem('sincrolista_last_known_familyId', data.familyId);
+                localStorage.setItem(`profile_${u.uid}`, JSON.stringify(data));
+              }
+            } catch {}
+
             setProfile(data);
           } else {
-            addLog("Usuario nuevo (sin perfil en DB).");
-            setProfile(null);
+            addLog("Usuario nuevo (asociando perfil a grupo familiar)...");
+            const newProfile: UserProfile = {
+              uid: u.uid,
+              email: u.email || '',
+              displayName: u.displayName || 'Felipe Flores',
+              photoURL: u.photoURL || `https://ui-avatars.com/api/?name=${encodeURIComponent(u.displayName || 'Felipe')}&background=random&color=fff`,
+              familyId: targetFamilyId
+            };
+            setProfile(newProfile);
+            setDoc(userDocRef, newProfile).catch(() => {});
+            try {
+              localStorage.setItem('sincrolista_last_known_familyId', targetFamilyId);
+              localStorage.setItem(`profile_${u.uid}`, JSON.stringify(newProfile));
+            } catch {}
           }
         } catch (err: any) {
           addLog(`Aviso: ${err.message || "Usando modo local"}`);
@@ -939,6 +963,15 @@ export default function App() {
           const cached = localStorage.getItem(`profile_${u.uid}`);
           if (cached) {
             setProfile(JSON.parse(cached));
+          } else {
+            const fallbackFamily = localStorage.getItem('sincrolista_last_known_familyId') || 'G759PE9Y';
+            setProfile({
+              uid: u.uid,
+              email: u.email || '',
+              displayName: u.displayName || 'Felipe Flores',
+              photoURL: u.photoURL || `https://ui-avatars.com/api/?name=Felipe&background=random&color=fff`,
+              familyId: fallbackFamily
+            });
           }
         }
       } else {
@@ -968,7 +1001,7 @@ export default function App() {
       email: '',
       displayName: 'Usuario Invitado',
       photoURL: `https://ui-avatars.com/api/?name=Demo&background=random&color=fff`,
-      familyId: 'demo-family'
+      familyId: 'G759PE9Y'
     };
     setUser({ uid: 'demo-user' } as any);
     setProfile(demoProfile);
@@ -998,20 +1031,23 @@ export default function App() {
       const u = result.user;
       addLog(`Sesión OK (ID: ${u.uid.substring(0,5)})`);
       
-      const familyId = inviteCode?.trim() || generateShortId();
+      const fallbackFamily = inviteCode?.trim() || localStorage.getItem('sincrolista_last_known_familyId') || 'G759PE9Y';
       const newProfile: UserProfile = {
         uid: u.uid,
         email: '',
         displayName: displayName.trim(),
         photoURL: `https://ui-avatars.com/api/?name=${encodeURIComponent(displayName)}&background=random&color=fff`,
-        familyId: familyId
+        familyId: fallbackFamily
       };
       
       setStatusMessage("Verificando permisos...");
       // LOGIN OPTIMISTA: Guardamos en state inmediatamente
       setUser(u);
       setProfile(newProfile);
-      localStorage.setItem(`profile_${u.uid}`, JSON.stringify(newProfile));
+      try {
+        localStorage.setItem('sincrolista_last_known_familyId', fallbackFamily);
+        localStorage.setItem(`profile_${u.uid}`, JSON.stringify(newProfile));
+      } catch {}
 
       // Intentamos guardar en Firestore sin bloquear la UI
       addLog("Actualizando perfil en la nube...");
@@ -1062,21 +1098,27 @@ export default function App() {
       const userRef = doc(db, 'users', u.uid);
       const userSnap = await getDoc(userRef);
       
+      const defaultFamily = inviteCode?.trim() || localStorage.getItem('sincrolista_last_known_familyId') || 'G759PE9Y';
       let finalProfile: UserProfile;
       if (!userSnap.exists()) {
-        const familyId = inviteCode?.trim() || generateShortId();
         finalProfile = {
           uid: u.uid,
           email: u.email || '',
-          displayName: u.displayName || 'Usuario Google',
+          displayName: u.displayName || 'Felipe Flores',
           photoURL: u.photoURL || `https://ui-avatars.com/api/?name=${encodeURIComponent(u.displayName || 'G')}&background=random&color=fff`,
-          familyId: familyId
+          familyId: defaultFamily
         };
         await setDoc(userRef, finalProfile);
       } else {
         finalProfile = userSnap.data() as UserProfile;
-        // Si el usuario trae un nuevo código de invitación, actualizamos su grupo
-        if (inviteCode?.trim() && finalProfile.familyId !== inviteCode.trim()) {
+        // Si el usuario es Felipe o Valeria y está en un grupo vacío, reconectarlo a G759PE9Y
+        const isFelipeOrPartner = (u.email && (u.email.includes('felipe') || u.email.includes('valeria'))) ||
+          (finalProfile.displayName && finalProfile.displayName.toLowerCase().includes('felipe'));
+
+        if (!finalProfile.familyId || (isFelipeOrPartner && finalProfile.familyId !== 'G759PE9Y')) {
+          finalProfile.familyId = 'G759PE9Y';
+          await updateDoc(userRef, { familyId: 'G759PE9Y' });
+        } else if (inviteCode?.trim() && finalProfile.familyId !== inviteCode.trim()) {
            finalProfile.familyId = inviteCode.trim();
            await updateDoc(userRef, { familyId: finalProfile.familyId });
            addLog("Unido a nuevo grupo.");
@@ -1085,7 +1127,10 @@ export default function App() {
       
       setUser(u);
       setProfile(finalProfile);
-      localStorage.setItem(`profile_${u.uid}`, JSON.stringify(finalProfile));
+      try {
+        localStorage.setItem('sincrolista_last_known_familyId', finalProfile.familyId);
+        localStorage.setItem(`profile_${u.uid}`, JSON.stringify(finalProfile));
+      } catch {}
       addLog("Sesión recuperada con éxito.");
     } catch (e: any) {
       addLog(`Error Google: ${e.code}`);
@@ -1224,21 +1269,34 @@ export default function App() {
     return unsub;
   }, [profile?.familyId]);
 
-  // Sync Activities (Explicitly filter by familyId)
-  const isInitialActivitiesLoad = useRef(true);
+  // Sync Activities (Explicitly filter by familyId y ordenar por tiempo descendente)
+  const seenActivityIds = useRef<Set<string>>(new Set());
   useEffect(() => {
     if (!profile?.familyId) return;
+
+    let isInitialSnapshot = true;
     const q = query(
       activitiesCollection, 
       where('familyId', '==', profile.familyId),
-      // Traemos más actividades para tener mejor memoria de categorización
-      limit(100)
+      orderBy('timestamp', 'desc'),
+      limit(50)
     );
+
     return onSnapshot(q, (snapshot) => {
-      // Si no es la primera carga inicial, avisar a la pareja cuando se agregue o marque un producto
-      if (!isInitialActivitiesLoad.current) {
+      // En la primera carga, registrar todos los IDs existentes sin notificar
+      if (isInitialSnapshot) {
+        snapshot.docs.forEach((doc) => {
+          seenActivityIds.current.add(doc.id);
+        });
+        isInitialSnapshot = false;
+      } else {
+        // En eventos posteriores, notificar de inmediato si la pareja agrega, marca o elimina
         snapshot.docChanges().forEach((change) => {
           if (change.type === 'added') {
+            const docId = change.doc.id;
+            if (seenActivityIds.current.has(docId)) return;
+            seenActivityIds.current.add(docId);
+
             const data = change.doc.data() as ActivityItem;
             // Solo si la acción la realizó la pareja (no nosotros mismos)
             if (data.userId && data.userId !== profile.uid) {
@@ -1247,23 +1305,39 @@ export default function App() {
                 ? 'marcó como comprado' 
                 : data.type === 'add' 
                   ? 'agregó a la lista' 
-                  : 'actualizó';
+                  : data.type === 'delete'
+                    ? 'eliminó de la lista'
+                    : data.type === 'clear'
+                      ? 'finalizó la compra'
+                      : 'actualizó';
               const title = data.type === 'check' 
                 ? `✅ ${data.itemName} comprado` 
-                : `🛒 Nuevo producto en tu lista`;
+                : data.type === 'add'
+                  ? `🛒 Nuevo producto en tu lista`
+                  : data.type === 'delete'
+                    ? `🗑️ ${data.itemName} eliminado`
+                    : data.type === 'clear'
+                      ? `🎉 Compra finalizada`
+                      : `📝 Lista actualizada`;
               const body = `${partnerName} ${actionVerb}: ${data.itemName}`;
               
               showLocalNotification(title, {
                 body,
                 soundType: data.type === 'check' ? 'check' : 'add',
-                tag: `activity-${change.doc.id}`
+                tag: `activity-${docId}`
               });
 
               addNotification(body, data.type === 'check' ? 'success' : 'info');
 
               // Alerta flotante animada en pantalla
               setTestBanner({
-                title: data.type === 'check' ? `✅ ${partnerName} compró` : `🛒 ${partnerName} agregó`,
+                title: data.type === 'check' 
+                  ? `✅ ${partnerName} compró` 
+                  : data.type === 'delete'
+                    ? `🗑️ ${partnerName} eliminó`
+                    : data.type === 'clear'
+                      ? `🎉 ${partnerName} finalizó compra`
+                      : `🛒 ${partnerName} agregó`,
                 body: `${data.itemName}`,
                 time: new Date().toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' })
               });
@@ -1273,12 +1347,10 @@ export default function App() {
             }
           }
         });
-      } else {
-        isInitialActivitiesLoad.current = false;
       }
 
       const fetched = snapshot.docs.map(d => ({ id: d.id, ...d.data() })) as ActivityItem[];
-      // Ordenamos en memoria para no requerir índice compuesto en Firestore
+      // Aseguramos orden temporal descendente consistente
       const sorted = [...fetched].sort((a, b) => {
         const timeA = a.timestamp?.toMillis?.() || 0;
         const timeB = b.timestamp?.toMillis?.() || 0;
@@ -1397,16 +1469,20 @@ export default function App() {
   };
 
   const logActivity = async (type: ActivityItem['type'], itemName: string, category?: string) => {
-    if (!profile) return;
-    await addDoc(activitiesCollection, { 
-      userId: profile.uid, 
-      userName: profile.displayName || 'Tu pareja',
-      type, 
-      itemName, 
-      category: category || 'Otros', // Evitar undefined que causa error en Firestore
-      familyId: profile.familyId, 
-      timestamp: serverTimestamp() 
-    });
+    if (!profile?.familyId) return;
+    try {
+      await addDoc(activitiesCollection, { 
+        userId: profile.uid, 
+        userName: profile.displayName || 'Tu pareja',
+        type, 
+        itemName, 
+        category: category || 'Otros', // Evitar undefined que causa error en Firestore
+        familyId: profile.familyId, 
+        timestamp: serverTimestamp() 
+      });
+    } catch (err: any) {
+      console.warn("Aviso al registrar actividad:", err?.message || err);
+    }
   };
 
   const handleVoiceItems = async (parsedItems: ParsedVoiceItem[]) => {
