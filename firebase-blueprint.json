@@ -10,7 +10,9 @@
         "familyId": { "type": "string" },
         "photoURL": { "type": "string" },
         "fcmToken": { "type": "string" },
-        "pushNotificationsEnabled": { "type": "boolean" }
+        "pushNotificationsEnabled": { "type": "boolean" },
+        "pushSubscription": { "type": "object" },
+        "pushSubscriptions": { "type": "array" }
       },
       "required": ["uid", "displayName", "familyId"]
     },
@@ -54,12 +56,26 @@
         "storeName": { "type": "string" }
       },
       "required": ["items", "familyId", "timestamp"]
+    },
+    "PushSubscriptionItem": {
+      "title": "PushSubscriptionItem",
+      "description": "Suscripción Web Push de dispositivo",
+      "type": "object",
+      "properties": {
+        "endpoint": { "type": "string" },
+        "keys": { "type": "object" },
+        "userId": { "type": "string" },
+        "familyId": { "type": "string" },
+        "updatedAt": { "type": "number" }
+      },
+      "required": ["endpoint", "keys", "userId", "familyId"]
     }
   },
   "firestore": {
     "/users/{userId}": { "schema": "UserProfile", "description": "Perfiles de usuario" },
     "/lists/{listId}": { "schema": "ShoppingList", "description": "Listas de la compra" },
     "/items/{itemId}": { "schema": "GroceryItem", "description": "Productos de las listas" },
-    "/history/{historyId}": { "schema": "PurchaseHistory", "description": "Historial de compras finalizadas" }
+    "/history/{historyId}": { "schema": "PurchaseHistory", "description": "Historial de compras finalizadas" },
+    "/push_subscriptions/{subId}": { "schema": "PushSubscriptionItem", "description": "Suscripciones Web Push de dispositivos" }
   }
 }

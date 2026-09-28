@@ -123,7 +123,10 @@ import {
   listenToForegroundMessages,
   NotificationPermissionStatus,
   isIOS,
-  isStandalone
+  isStandalone,
+  subscribeToWebPush,
+  sendPushNotificationToPartners,
+  PushSubscriptionData
 } from './lib/notifications';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
@@ -270,6 +273,8 @@ interface UserProfile {
   favoriteItems?: string[];
   fcmToken?: string;
   pushNotificationsEnabled?: boolean;
+  pushSubscription?: PushSubscriptionData;
+  pushSubscriptions?: PushSubscriptionData[];
 }
 
 interface ActivityItem {
@@ -795,8 +800,29 @@ export default function App() {
         if (result.token) {
           updates.fcmToken = result.token;
         }
+        if (result.pushSubscription) {
+          updates.pushSubscription = result.pushSubscription;
+          const currentSubs = Array.isArray(profile?.pushSubscriptions) ? [...profile!.pushSubscriptions] : [];
+          const deduped = currentSubs.filter(s => s.endpoint !== result.pushSubscription!.endpoint);
+          deduped.push(result.pushSubscription);
+          updates.pushSubscriptions = deduped.slice(-5);
+
+          // También guardar en colección push_subscriptions para respaldo directo
+          try {
+            const cleanSubId = `${currentUid}_${btoa(result.pushSubscription.endpoint.slice(-16)).replace(/[/+=]/g, '_')}`;
+            await setDoc(doc(db, 'push_subscriptions', cleanSubId), {
+              userId: currentUid,
+              familyId: profile?.familyId || 'G759PE9Y',
+              endpoint: result.pushSubscription.endpoint,
+              keys: result.pushSubscription.keys,
+              updatedAt: Date.now()
+            });
+          } catch (colErr) {
+            console.debug('Aviso guardando en push_subscriptions:', colErr);
+          }
+        }
         await updateDoc(doc(db, 'users', currentUid), updates).catch(err => {
-          console.warn('Error al actualizar fcmToken en Firestore:', err);
+          console.warn('Error al actualizar push subscription en Firestore:', err);
         });
         setProfile(prev => prev ? ({ ...prev, ...updates }) : null);
       }
@@ -865,7 +891,51 @@ export default function App() {
       body: testBody,
       soundType: 'check'
     });
+
+    // Enviar notificación Push de prueba en segundo plano a la pareja
+    notifyPartnersViaPush('check', 'Leche Entera (2 un)');
   };
+
+  // Auto-asegurar suscripción Web Push en segundo plano si el permiso del navegador ya está concedido
+  useEffect(() => {
+    if (!profile?.uid || !profile?.familyId) return;
+    if (typeof window === 'undefined' || !('Notification' in window)) return;
+    if (Notification.permission !== 'granted') return;
+
+    let active = true;
+    (async () => {
+      try {
+        const pushSub = await subscribeToWebPush();
+        if (!pushSub || !active) return;
+
+        const currentUid = profile.uid;
+        const currentSubs = Array.isArray(profile.pushSubscriptions) ? [...profile.pushSubscriptions] : [];
+        const alreadyPresent = currentSubs.some(s => s.endpoint === pushSub.endpoint);
+
+        if (!alreadyPresent || !profile.pushSubscription) {
+          const updatedSubs = [...currentSubs.filter(s => s.endpoint !== pushSub.endpoint), pushSub].slice(-5);
+          await updateDoc(doc(db, 'users', currentUid), {
+            pushSubscription: pushSub,
+            pushSubscriptions: updatedSubs,
+            pushNotificationsEnabled: true
+          }).catch(() => {});
+
+          const cleanSubId = `${currentUid}_${btoa(pushSub.endpoint.slice(-16)).replace(/[/+=]/g, '_')}`;
+          await setDoc(doc(db, 'push_subscriptions', cleanSubId), {
+            userId: currentUid,
+            familyId: profile.familyId,
+            endpoint: pushSub.endpoint,
+            keys: pushSub.keys,
+            updatedAt: Date.now()
+          }).catch(() => {});
+        }
+      } catch (err) {
+        console.debug('Aviso auto-registro push:', err);
+      }
+    })();
+
+    return () => { active = false; };
+  }, [profile?.uid, profile?.familyId]);
   
   // Dialog State
   const [promptConfig, setPromptConfig] = useState<{
@@ -1468,6 +1538,80 @@ export default function App() {
     }
   };
 
+  const notifyPartnersViaPush = async (type: ActivityItem['type'], itemName: string) => {
+    if (!profile?.familyId) return;
+
+    const partnerName = profile.displayName || 'Tu pareja';
+    const actionVerb = type === 'check' 
+      ? 'marcó como comprado' 
+      : type === 'add' 
+        ? 'agregó a la lista' 
+        : type === 'delete'
+          ? 'eliminó de la lista'
+          : type === 'clear'
+            ? 'finalizó la compra'
+            : 'actualizó';
+
+    const title = type === 'check' 
+      ? `✅ ${itemName} comprado` 
+      : type === 'add' 
+        ? `🛒 Nuevo producto en tu lista` 
+        : type === 'delete'
+          ? `🗑️ ${itemName} eliminado`
+          : type === 'clear'
+            ? `🎉 Compra finalizada`
+            : `📝 Lista sincronizada`;
+
+    const body = `${partnerName} ${actionVerb}: ${itemName}`;
+
+    // 1. Recolectar suscripciones Web Push de los miembros del grupo (excepto el usuario actual)
+    const partnerSubs: PushSubscriptionData[] = [];
+    syncedUsers.forEach(u => {
+      if (u.uid !== profile.uid) {
+        if (Array.isArray(u.pushSubscriptions)) {
+          u.pushSubscriptions.forEach(s => {
+            if (s?.endpoint && s?.keys?.p256dh && !partnerSubs.some(p => p.endpoint === s.endpoint)) {
+              partnerSubs.push(s);
+            }
+          });
+        }
+        if (u.pushSubscription?.endpoint && u.pushSubscription?.keys?.p256dh && !partnerSubs.some(p => p.endpoint === u.pushSubscription!.endpoint)) {
+          partnerSubs.push(u.pushSubscription);
+        }
+      }
+    });
+
+    // 2. Si syncedUsers aún no tiene las suscripciones, consultar también la colección push_subscriptions
+    try {
+      const qPush = query(collection(db, 'push_subscriptions'), where('familyId', '==', profile.familyId));
+      const snap = await getDocs(qPush);
+      snap.forEach(docSnap => {
+        const data = docSnap.data() as any;
+        if (data.userId !== profile.uid && data.endpoint && data.keys?.p256dh) {
+          if (!partnerSubs.some(s => s.endpoint === data.endpoint)) {
+            partnerSubs.push({
+              endpoint: data.endpoint,
+              keys: data.keys
+            });
+          }
+        }
+      });
+    } catch (pushLookupErr) {
+      console.debug('Aviso consultando colección push_subscriptions:', pushLookupErr);
+    }
+
+    if (partnerSubs.length > 0) {
+      sendPushNotificationToPartners(partnerSubs, {
+        title,
+        body,
+        tag: `sincro-${type}-${Date.now()}`,
+        data: { url: '/', familyId: profile.familyId, type, itemName }
+      }).catch(err => {
+        console.debug('Aviso al enviar push a pareja:', err);
+      });
+    }
+  };
+
   const logActivity = async (type: ActivityItem['type'], itemName: string, category?: string) => {
     if (!profile?.familyId) return;
     try {
@@ -1480,6 +1624,8 @@ export default function App() {
         familyId: profile.familyId, 
         timestamp: serverTimestamp() 
       });
+      // Enviar notificación Push para que le suene y vibre a la pareja en segundo plano / pantalla apagada
+      notifyPartnersViaPush(type, itemName);
     } catch (err: any) {
       console.warn("Aviso al registrar actividad:", err?.message || err);
     }

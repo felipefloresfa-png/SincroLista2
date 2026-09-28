@@ -2,14 +2,39 @@ import { app } from '../firebase';
 
 export type NotificationPermissionStatus = 'granted' | 'denied' | 'default' | 'unsupported';
 
+export interface PushSubscriptionData {
+  endpoint: string;
+  expirationTime?: number | null;
+  keys: {
+    p256dh: string;
+    auth: string;
+  };
+  device?: string;
+  updatedAt?: number;
+}
+
 export interface FCMTokenResult {
   permission: NotificationPermissionStatus;
   token?: string;
+  pushSubscription?: PushSubscriptionData;
   error?: string;
   inAppOnly?: boolean;
   nativeSupported?: boolean;
   isIOS?: boolean;
   isStandalone?: boolean;
+}
+
+export const VAPID_PUBLIC_KEY = 'BNtQ9_C5jJzCv8Pw05eElPm1EJ_4XHI9m5P_p9H_r66S7mrB66kX43lOGWB089vBx1Yt4PKK4TvPULjSKlgZYv0';
+
+export function urlBase64ToUint8Array(base64String: string): Uint8Array {
+  const padding = '='.repeat((4 - (base64String.length % 4)) % 4);
+  const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+  const rawData = window.atob(base64);
+  const outputArray = new Uint8Array(rawData.length);
+  for (let i = 0; i < rawData.length; ++i) {
+    outputArray[i] = rawData.charCodeAt(i);
+  }
+  return outputArray;
 }
 
 // Detección de dispositivo iOS (iPhone / iPad / iPod)
@@ -335,6 +360,14 @@ export async function requestFCMToken(vapidKey?: string): Promise<FCMTokenResult
       }
     }
 
+    // Suscribir al servicio Web Push estándar (permite despertar el Service Worker con la app cerrada)
+    let pushSub: PushSubscriptionData | null = null;
+    try {
+      pushSub = await subscribeToWebPush();
+    } catch (pushSubErr) {
+      console.warn('Aviso suscripción Web Push:', pushSubErr);
+    }
+
     // Intentar obtener el token de FCM si es compatible
     let token: string | undefined;
     try {
@@ -346,7 +379,7 @@ export async function requestFCMToken(vapidKey?: string): Promise<FCMTokenResult
         token = await Promise.race([
           getToken(messaging, {
             serviceWorkerRegistration: swRegistration,
-            vapidKey: vapidKey || undefined,
+            vapidKey: vapidKey || VAPID_PUBLIC_KEY,
           }),
           new Promise<undefined>((resolve) => setTimeout(() => resolve(undefined), 2500)),
         ]);
@@ -359,6 +392,7 @@ export async function requestFCMToken(vapidKey?: string): Promise<FCMTokenResult
     return {
       permission: 'granted',
       token,
+      pushSubscription: pushSub || undefined,
       nativeSupported: true,
       inAppOnly: false,
       isIOS: ios,
@@ -374,6 +408,82 @@ export async function requestFCMToken(vapidKey?: string): Promise<FCMTokenResult
       isIOS: ios,
       isStandalone: standalone,
     };
+  }
+}
+
+// Suscribe el dispositivo al gestor Web Push para recibir notificaciones cuando la app está cerrada
+export async function subscribeToWebPush(): Promise<PushSubscriptionData | null> {
+  if (typeof window === 'undefined' || !('serviceWorker' in navigator) || !('PushManager' in window)) {
+    return null;
+  }
+  try {
+    const registration = await Promise.race([
+      navigator.serviceWorker.ready,
+      new Promise<undefined>((resolve) => setTimeout(() => resolve(undefined), 2500))
+    ]);
+    if (!registration) return null;
+
+    let subscription = await registration.pushManager.getSubscription();
+
+    // Si no existe suscripción previa, crearla con la clave pública VAPID
+    if (!subscription) {
+      const convertedVapidKey = urlBase64ToUint8Array(VAPID_PUBLIC_KEY);
+      subscription = await registration.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: convertedVapidKey,
+      });
+    }
+
+    const json = subscription.toJSON();
+    if (json.endpoint && json.keys?.p256dh && json.keys?.auth) {
+      return {
+        endpoint: json.endpoint,
+        expirationTime: json.expirationTime,
+        keys: {
+          p256dh: json.keys.p256dh,
+          auth: json.keys.auth,
+        },
+        device: isIOS() ? 'iOS' : /Android/.test(navigator.userAgent) ? 'Android' : 'Desktop',
+        updatedAt: Date.now()
+      };
+    }
+    return null;
+  } catch (err) {
+    console.warn('Error al suscribir a Web Push:', err);
+    return null;
+  }
+}
+
+// Envía la notificación Web Push a los dispositivos suscritos de la pareja a través del servidor
+export async function sendPushNotificationToPartners(
+  subscriptions: PushSubscriptionData[],
+  notification: { title: string; body: string; tag?: string; data?: any }
+): Promise<{ success: boolean; sent?: number }> {
+  if (!subscriptions || subscriptions.length === 0) {
+    return { success: true, sent: 0 };
+  }
+
+  try {
+    const res = await fetch('/api/send-push', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        subscriptions,
+        notification,
+      }),
+    });
+    if (!res.ok) {
+      const text = await res.text();
+      console.warn('Respuesta de /api/send-push:', res.status, text);
+      return { success: false };
+    }
+    const data = await res.json();
+    return { success: true, sent: data.sent };
+  } catch (err) {
+    console.warn('Aviso enviando notificación push al servidor:', err);
+    return { success: false };
   }
 }
 
