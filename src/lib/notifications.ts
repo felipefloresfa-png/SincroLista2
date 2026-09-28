@@ -13,6 +13,21 @@ export interface PushSubscriptionData {
   updatedAt?: number;
 }
 
+// Limpia campos undefined para evitar errores de Firestore
+export function sanitizeForFirestore<T extends Record<string, any>>(obj: T): T {
+  if (!obj || typeof obj !== 'object') return obj;
+  const cleaned: any = Array.isArray(obj) ? [] : {};
+  for (const [key, value] of Object.entries(obj)) {
+    if (value === undefined) continue;
+    if (value !== null && typeof value === 'object') {
+      cleaned[key] = sanitizeForFirestore(value);
+    } else {
+      cleaned[key] = value;
+    }
+  }
+  return cleaned;
+}
+
 export interface FCMTokenResult {
   permission: NotificationPermissionStatus;
   token?: string;
@@ -436,9 +451,8 @@ export async function subscribeToWebPush(): Promise<PushSubscriptionData | null>
 
     const json = subscription.toJSON();
     if (json.endpoint && json.keys?.p256dh && json.keys?.auth) {
-      return {
+      const sub: PushSubscriptionData = {
         endpoint: json.endpoint,
-        expirationTime: json.expirationTime,
         keys: {
           p256dh: json.keys.p256dh,
           auth: json.keys.auth,
@@ -446,6 +460,10 @@ export async function subscribeToWebPush(): Promise<PushSubscriptionData | null>
         device: isIOS() ? 'iOS' : /Android/.test(navigator.userAgent) ? 'Android' : 'Desktop',
         updatedAt: Date.now()
       };
+      if (typeof json.expirationTime === 'number') {
+        sub.expirationTime = json.expirationTime;
+      }
+      return sanitizeForFirestore(sub);
     }
     return null;
   } catch (err) {

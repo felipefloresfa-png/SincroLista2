@@ -126,7 +126,8 @@ import {
   isStandalone,
   subscribeToWebPush,
   sendPushNotificationToPartners,
-  PushSubscriptionData
+  PushSubscriptionData,
+  sanitizeForFirestore
 } from './lib/notifications';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
@@ -801,27 +802,28 @@ export default function App() {
           updates.fcmToken = result.token;
         }
         if (result.pushSubscription) {
-          updates.pushSubscription = result.pushSubscription;
+          const cleanPushSub = sanitizeForFirestore(result.pushSubscription);
+          updates.pushSubscription = cleanPushSub;
           const currentSubs = Array.isArray(profile?.pushSubscriptions) ? [...profile!.pushSubscriptions] : [];
-          const deduped = currentSubs.filter(s => s.endpoint !== result.pushSubscription!.endpoint);
-          deduped.push(result.pushSubscription);
+          const deduped = currentSubs.filter(s => s.endpoint !== cleanPushSub.endpoint);
+          deduped.push(cleanPushSub);
           updates.pushSubscriptions = deduped.slice(-5);
 
           // También guardar en colección push_subscriptions para respaldo directo
           try {
-            const cleanSubId = `${currentUid}_${btoa(result.pushSubscription.endpoint.slice(-16)).replace(/[/+=]/g, '_')}`;
-            await setDoc(doc(db, 'push_subscriptions', cleanSubId), {
+            const cleanSubId = `${currentUid}_${btoa(cleanPushSub.endpoint.slice(-16)).replace(/[/+=]/g, '_')}`;
+            await setDoc(doc(db, 'push_subscriptions', cleanSubId), sanitizeForFirestore({
               userId: currentUid,
               familyId: profile?.familyId || 'G759PE9Y',
-              endpoint: result.pushSubscription.endpoint,
-              keys: result.pushSubscription.keys,
+              endpoint: cleanPushSub.endpoint,
+              keys: cleanPushSub.keys,
               updatedAt: Date.now()
-            });
+            }));
           } catch (colErr) {
             console.debug('Aviso guardando en push_subscriptions:', colErr);
           }
         }
-        await updateDoc(doc(db, 'users', currentUid), updates).catch(err => {
+        await updateDoc(doc(db, 'users', currentUid), sanitizeForFirestore(updates)).catch(err => {
           console.warn('Error al actualizar push subscription en Firestore:', err);
         });
         setProfile(prev => prev ? ({ ...prev, ...updates }) : null);
@@ -913,21 +915,22 @@ export default function App() {
         const alreadyPresent = currentSubs.some(s => s.endpoint === pushSub.endpoint);
 
         if (!alreadyPresent || !profile.pushSubscription) {
-          const updatedSubs = [...currentSubs.filter(s => s.endpoint !== pushSub.endpoint), pushSub].slice(-5);
-          await updateDoc(doc(db, 'users', currentUid), {
-            pushSubscription: pushSub,
+          const cleanSub = sanitizeForFirestore(pushSub);
+          const updatedSubs = [...currentSubs.filter(s => s.endpoint !== cleanSub.endpoint), cleanSub].slice(-5);
+          await updateDoc(doc(db, 'users', currentUid), sanitizeForFirestore({
+            pushSubscription: cleanSub,
             pushSubscriptions: updatedSubs,
             pushNotificationsEnabled: true
-          }).catch(() => {});
+          })).catch(() => {});
 
-          const cleanSubId = `${currentUid}_${btoa(pushSub.endpoint.slice(-16)).replace(/[/+=]/g, '_')}`;
-          await setDoc(doc(db, 'push_subscriptions', cleanSubId), {
+          const cleanSubId = `${currentUid}_${btoa(cleanSub.endpoint.slice(-16)).replace(/[/+=]/g, '_')}`;
+          await setDoc(doc(db, 'push_subscriptions', cleanSubId), sanitizeForFirestore({
             userId: currentUid,
             familyId: profile.familyId,
-            endpoint: pushSub.endpoint,
-            keys: pushSub.keys,
+            endpoint: cleanSub.endpoint,
+            keys: cleanSub.keys,
             updatedAt: Date.now()
-          }).catch(() => {});
+          })).catch(() => {});
         }
       } catch (err) {
         console.debug('Aviso auto-registro push:', err);
