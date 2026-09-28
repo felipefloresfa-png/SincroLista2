@@ -1607,7 +1607,7 @@ export default function App() {
       sendPushNotificationToPartners(partnerSubs, {
         title,
         body,
-        tag: `sincro-${type}-${Date.now()}`,
+        tag: `sincro-${type}-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
         data: { url: '/', familyId: profile.familyId, type, itemName }
       }).catch(err => {
         console.debug('Aviso al enviar push a pareja:', err);

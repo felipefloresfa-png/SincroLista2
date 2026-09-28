@@ -30,12 +30,14 @@ try {
   messaging.onBackgroundMessage((payload) => {
     console.log('[firebase-messaging-sw.js] Mensaje recibido en segundo plano:', payload);
     const title = payload.notification?.title || payload.data?.title || 'SincroLista 🛒';
+    const uniqueTag = payload.data?.tag || `sincrolista-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
     const options = {
       body: payload.notification?.body || payload.data?.body || 'Actualización en tu lista compartida',
       icon: '/icon-192.png',
       badge: '/badge-72.png',
       vibrate: [200, 100, 200],
-      tag: payload.data?.tag || 'sincrolista-notification',
+      tag: uniqueTag,
+      renotify: true,
       data: payload.data || {},
     };
     self.registration.showNotification(title, options);
@@ -51,12 +53,14 @@ self.addEventListener('push', (event) => {
       const data = event.data.json();
       const title = data.title || data.notification?.title || 'SincroLista 🛒';
       const body = data.body || data.notification?.body || 'Un producto fue agregado o marcado';
+      const uniqueTag = data.tag || `sincrolista-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
       const options = {
         body,
         icon: '/icon-192.png',
         badge: '/badge-72.png',
         vibrate: [200, 100, 200],
-        tag: data.tag || 'sincrolista-push',
+        tag: uniqueTag,
+        renotify: true,
         data: data.data || data,
       };
       event.waitUntil(self.registration.showNotification(title, options));
@@ -66,6 +70,8 @@ self.addEventListener('push', (event) => {
         self.registration.showNotification('SincroLista 🛒', {
           body: text || 'Tu pareja actualizó la lista de compras.',
           icon: '/icon-192.png',
+          tag: `sincrolista-${Date.now()}`,
+          renotify: true,
         })
       );
     }
