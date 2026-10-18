@@ -1,6 +1,18 @@
-import { GoogleGenAI, Type } from "@google/genai";
+import { Type } from "@google/genai";
+import { auth } from "./firebaseUtils";
 
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || '' });
+export async function generateAIContent(request: Record<string, any>): Promise<{ text: string }> {
+  const user = auth.currentUser;
+  if (!user) throw new Error("Inicia sesión para usar las funciones de IA.");
+  const idToken = await user.getIdToken();
+  const response = await fetch("/api/gemini", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${idToken}` },
+    body: JSON.stringify(request),
+  });
+  if (!response.ok) throw new Error("No se pudo completar la solicitud de IA.");
+  return response.json();
+}
 
 export interface ItemInfo {
   category: string;
@@ -10,15 +22,10 @@ export interface ItemInfo {
 }
 
 export async function analyzeItem(itemName: string): Promise<ItemInfo> {
-  const keyStatus = process.env.GEMINI_API_KEY ? "Presente" : "AUSENTE";
-  console.log(`[IA] Analizando: ${itemName} (Key: ${keyStatus})`);
-  
-  if (!process.env.GEMINI_API_KEY) {
-    throw new Error("Falta la GEMINI_API_KEY en las variables de entorno.");
-  }
+  console.log(`[IA] Analizando: ${itemName}`);
 
   try {
-    const response = await ai.models.generateContent({
+    const response = await generateAIContent({
       model: "gemini-3-flash-preview",
       contents: `Analiza este producto de supermercado: "${itemName}".
       Categorízalo en una de estas categorías estándar: 
@@ -59,12 +66,7 @@ export async function analyzeItem(itemName: string): Promise<ItemInfo> {
 export async function getSmartRecommendations(history: string[]) {
   console.log(`[IA] Generando recomendaciones (History size: ${history.length})`);
   
-  if (!process.env.GEMINI_API_KEY) {
-    console.warn("IA: GEMINI_API_KEY no detectada. Usando recomendaciones por defecto.");
-    return ["Leche", "Huevos", "Pan", "Fruta", "Papel Higiénico", "Arroz", "Aceite", "Azúcar", "Sal", "Café", "Té", "Pasta"];
-  }
-
-  try {
+try {
     const isHistoryEmpty = history.length === 0;
     const prompt = isHistoryEmpty 
       ? "Sugiere 12 productos básicos de supermercado (despensa, frescos, higiene) que suelen faltar en cualquier hogar. Devuelve un array JSON de strings con solo los nombres de los productos."
@@ -73,7 +75,7 @@ export async function getSmartRecommendations(history: string[]) {
       Evita repetir productos del historial si ya están ahí.
       Devuelve un array JSON de strings con solo los nombres de los productos.`;
 
-    const response = await ai.models.generateContent({
+    const response = await generateAIContent({
       model: "gemini-3-flash-preview",
       contents: prompt,
       config: {
@@ -112,12 +114,8 @@ export async function parseVoiceInput(text: string): Promise<ParsedVoiceItem[]> 
     return items.map(name => ({ name: name.charAt(0).toUpperCase() + name.slice(1) }));
   };
 
-  if (!process.env.GEMINI_API_KEY) {
-    return fallbackSplit(text);
-  }
-
-  try {
-    const response = await ai.models.generateContent({
+try {
+    const response = await generateAIContent({
       model: "gemini-3-flash-preview",
       contents: `Tu tarea es tomar un texto dictado por voz y convertirlo en una LISTA de productos individuales para el supermercado.
       
@@ -178,11 +176,7 @@ export interface SupermarketPrice {
 export async function searchMarketPrices(itemNames: string[]): Promise<SupermarketPrice[]> {
   if (itemNames.length === 0) return [];
   
-  if (!process.env.GEMINI_API_KEY) {
-    throw new Error("GEMINI_API_KEY no detectada en las variables de entorno.");
-  }
-
-  const prompt = `Busca en internet el precio actual real (en pesos chilenos - CLP) de los siguientes productos en los supermercados de Chile: Lider (Walmart), Jumbo y Unimarc.
+const prompt = `Busca en internet el precio actual real (en pesos chilenos - CLP) de los siguientes productos en los supermercados de Chile: Lider (Walmart), Jumbo y Unimarc.
   
   Productos a buscar:
   ${itemNames.map((name, idx) => `${idx + 1}. ${name}`).join('\n')}
@@ -205,7 +199,7 @@ export async function searchMarketPrices(itemNames: string[]): Promise<Supermark
   ]`;
 
   try {
-    const response = await ai.models.generateContent({
+    const response = await generateAIContent({
       model: "gemini-3.5-flash",
       contents: prompt,
       config: {
