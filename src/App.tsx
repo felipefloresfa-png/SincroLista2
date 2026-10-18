@@ -187,14 +187,36 @@ const COMMON_CATEGORIES = [
 ];
 
 const fileToGenerativePart = async (file: File) => {
-  const base64EncodedDataPromise = new Promise((resolve) => {
-    const reader = new FileReader();
-    reader.onloadend = () => resolve((reader.result as string).split(',')[1]);
-    reader.readAsDataURL(file);
-  });
-  return {
-    inlineData: { data: await base64EncodedDataPromise as string, mimeType: file.type },
-  };
+  // Reducir las fotos antes de enviarlas para respetar el límite del endpoint serverless.
+  try {
+    const bitmap = await createImageBitmap(file);
+    const scale = Math.min(1, 1600 / Math.max(bitmap.width, bitmap.height));
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.round(bitmap.width * scale);
+    canvas.height = Math.round(bitmap.height * scale);
+    const context = canvas.getContext('2d');
+    if (!context) throw new Error('No se pudo preparar la imagen.');
+    context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+    bitmap.close();
+    const compressed = await new Promise<Blob>((resolve, reject) => {
+      canvas.toBlob(blob => blob ? resolve(blob) : reject(new Error('No se pudo comprimir la imagen.')), 'image/jpeg', 0.82);
+    });
+    const data = await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onloadend = () => resolve((reader.result as string).split(',')[1]);
+      reader.onerror = () => reject(reader.error);
+      reader.readAsDataURL(compressed);
+    });
+    return { inlineData: { data, mimeType: 'image/jpeg' } };
+  } catch {
+    const data = await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onloadend = () => resolve((reader.result as string).split(',')[1]);
+      reader.onerror = () => reject(reader.error);
+      reader.readAsDataURL(file);
+    });
+    return { inlineData: { data, mimeType: file.type } };
+  }
 };
 
 const processReceipt = async (imageFile: File) => {
