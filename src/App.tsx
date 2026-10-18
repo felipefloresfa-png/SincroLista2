@@ -4731,11 +4731,13 @@ function StatsDashboard({ onOpenMenu, history }: { onOpenMenu: () => void, histo
     });
 
     const starProduct = Object.entries(counts).sort((a, b) => b[1] - a[1])[0]?.[0] || 'N/A';
-    const percentChange = totalLastMonth === 0 ? (totalThisMonth > 0 ? 100 : 0) : Math.round(((totalThisMonth - totalLastMonth) / totalLastMonth) * 100);
+    const hasComparison = totalLastMonth > 0;
+    const percentChange = hasComparison ? Math.round(((totalThisMonth - totalLastMonth) / totalLastMonth) * 100) : 0;
 
     return {
       totalThisMonth,
       totalLastMonth,
+      hasComparison,
       percentChange,
       starProduct,
       storeCounts
@@ -4768,9 +4770,9 @@ function StatsDashboard({ onOpenMenu, history }: { onOpenMenu: () => void, histo
             </div>
             <div className={cn(
               "px-3 py-1 rounded-full text-[10px] font-black uppercase",
-              stats.percentChange >= 0 ? "bg-red-50 text-red-500" : "bg-green-50 text-green-500"
+              !stats.hasComparison ? "bg-gray-50 text-gray-500" : stats.percentChange >= 0 ? "bg-red-50 text-red-500" : "bg-green-50 text-green-500"
             )}>
-              {stats.percentChange >= 0 ? '+' : ''}{stats.percentChange}% vs mes ant.
+              {stats.hasComparison ? `${stats.percentChange >= 0 ? '+' : ''}${stats.percentChange}% vs mes ant.` : 'Sin base mes ant.'}
             </div>
           </div>
           <div className="space-y-1">
@@ -4837,9 +4839,11 @@ function StatsDashboard({ onOpenMenu, history }: { onOpenMenu: () => void, histo
         <div className="flex-1 text-center md:text-left">
           <h3 className="text-lg font-black text-text-main mb-1">Optimizando tu presupuesto</h3>
           <p className="text-xs text-text-secondary font-medium leading-relaxed">
-            {stats.totalThisMonth === 0 && stats.totalLastMonth === 0
-              ? 'Aún no hay gastos registrados para comparar entre estos meses.'
-              : `Basado en tu historial, estás gastando un ${Math.abs(stats.percentChange)}% ${stats.percentChange > 0 ? 'más' : 'menos'} que el mes pasado.`}
+            {!stats.hasComparison
+              ? stats.totalThisMonth === 0
+                ? 'Aún no hay gastos registrados en estos meses para comparar.'
+                : `No hay gastos del mes anterior para comparar. Este mes llevas ${stats.totalThisMonth.toLocaleString('es-CL')}.`
+              : `Basado en tu historial, estás gastando un ${Math.abs(stats.percentChange)}% ${stats.percentChange > 0 ? 'más' : stats.percentChange < 0 ? 'menos' : 'igual'} que el mes pasado.`}
             {' '}Recuerda usar el <strong>Modo Despensa</strong> para planificar tus compras.
           </p>
         </div>
