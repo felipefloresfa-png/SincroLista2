@@ -1,4 +1,5 @@
 import { app } from '../firebase';
+import { getAuth } from 'firebase/auth';
 
 export type NotificationPermissionStatus = 'granted' | 'denied' | 'default' | 'unsupported';
 
@@ -438,14 +439,28 @@ export async function subscribeToWebPush(): Promise<PushSubscriptionData | null>
     ]);
     if (!registration) return null;
 
-    let subscription = await registration.pushManager.getSubscription();
+    const keyResponse = await fetch('/api/vapid-public-key');
+    if (!keyResponse.ok) return null;
+    const { publicKey } = await keyResponse.json();
+    if (typeof publicKey !== 'string' || !publicKey) return null;
 
-    // Si no existe suscripción previa, crearla con la clave pública VAPID
+    const applicationServerKey = urlBase64ToUint8Array(publicKey);
+    let subscription = await registration.pushManager.getSubscription();
+    const existingKey = subscription?.options.applicationServerKey;
+    const keyMatches = existingKey &&
+      existingKey.byteLength === applicationServerKey.byteLength &&
+      new Uint8Array(existingKey).every((byte, index) => byte === applicationServerKey[index]);
+
+    // Una suscripción creada con la clave anterior no puede recibir mensajes firmados
+    // con la nueva; vuelve a suscribir el navegador cuando Vercel rota la clave.
+    if (subscription && !keyMatches) {
+      await subscription.unsubscribe();
+      subscription = null;
+    }
     if (!subscription) {
-      const convertedVapidKey = urlBase64ToUint8Array(VAPID_PUBLIC_KEY);
       subscription = await registration.pushManager.subscribe({
         userVisibleOnly: true,
-        applicationServerKey: convertedVapidKey,
+        applicationServerKey,
       });
     }
 
@@ -482,10 +497,14 @@ export async function sendPushNotificationToPartners(
   }
 
   try {
+    const user = getAuth(app).currentUser;
+    if (!user) return { success: false };
+    const idToken = await user.getIdToken();
     const res = await fetch('/api/send-push', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
+        Authorization: `Bearer ${idToken}`,
       },
       body: JSON.stringify({
         subscriptions,
