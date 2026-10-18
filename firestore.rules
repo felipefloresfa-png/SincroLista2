@@ -17,7 +17,7 @@ service cloud.firestore {
     // 1. Users
     match /users/{userId} {
       allow get: if isSignedIn() && (request.auth.uid == userId || resource.data.familyId == getUserFamilyId() || isAdmin());
-      allow list: if isSignedIn();
+      allow list: if isSignedIn() && (resource.data.familyId == getUserFamilyId() || isAdmin());
       allow create: if isSignedIn() && request.auth.uid == userId && isValidUser(incoming());
       allow update: if isSignedIn() && request.auth.uid == userId && isValidUser(incoming())
                     && incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'photoURL', 'favoriteItems', 'familyId', 'fcmToken', 'pushNotificationsEnabled', 'pushSubscription', 'pushSubscriptions']);
@@ -90,7 +90,7 @@ service cloud.firestore {
     // 6. Push Subscriptions para entrega en segundo plano / pantalla apagada
     match /push_subscriptions/{subId} {
       allow read: if isSignedIn() && (resource.data.familyId == getUserFamilyId() || isAdmin());
-      allow list: if isSignedIn();
+      allow list: if isSignedIn() && (resource.data.familyId == getUserFamilyId() || isAdmin());
       allow create, update: if isSignedIn() && incoming().familyId == getUserFamilyId();
       allow delete: if isSignedIn() && (existing().familyId == getUserFamilyId() || isAdmin());
     }
