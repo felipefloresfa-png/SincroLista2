@@ -1003,8 +1003,12 @@ export default function App() {
           const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error("Conexión Firestore lenta")), 3000));
           
           const userDoc = await Promise.race([docPromise, timeoutPromise]) as any;
-          const storedKnownFamily = typeof window !== 'undefined' ? localStorage.getItem('sincrolista_last_known_familyId') : null;
-          const targetFamilyId = inviteCodeFromUrl.trim() || storedKnownFamily || generateShortId();
+          const cachedProfileRaw = typeof window !== 'undefined' ? localStorage.getItem(`profile_${u.uid}`) : null;
+          let cachedFamilyId = '';
+          try {
+            cachedFamilyId = cachedProfileRaw ? (JSON.parse(cachedProfileRaw) as UserProfile).familyId || '' : '';
+          } catch {}
+          const targetFamilyId = inviteCodeFromUrl.trim() || cachedFamilyId || generateShortId();
 
           if (userDoc.exists()) {
             addLog("Perfil encontrado.");
@@ -1047,7 +1051,7 @@ export default function App() {
           if (cached) {
             setProfile(JSON.parse(cached));
           } else {
-            const fallbackFamily = inviteCodeFromUrl.trim() || localStorage.getItem('sincrolista_last_known_familyId') || generateShortId();
+            const fallbackFamily = inviteCodeFromUrl.trim() || generateShortId();
             setProfile({
               uid: u.uid,
               email: u.email || '',
@@ -1114,7 +1118,7 @@ export default function App() {
       const u = result.user;
       addLog(`Sesión OK (ID: ${u.uid.substring(0,5)})`);
       
-      const fallbackFamily = inviteCode?.trim() || localStorage.getItem('sincrolista_last_known_familyId') || generateShortId();
+      const fallbackFamily = inviteCode?.trim() || generateShortId();
       const newProfile: UserProfile = {
         uid: u.uid,
         email: '',
@@ -1181,7 +1185,7 @@ export default function App() {
       const userRef = doc(db, 'users', u.uid);
       const userSnap = await getDoc(userRef);
       
-      const defaultFamily = inviteCode?.trim() || localStorage.getItem('sincrolista_last_known_familyId') || generateShortId();
+      const defaultFamily = inviteCode?.trim() || generateShortId();
       let finalProfile: UserProfile;
       if (!userSnap.exists()) {
         finalProfile = {
