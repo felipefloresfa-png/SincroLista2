@@ -41,11 +41,20 @@ Una aplicación de lista de supermercado inteligente diseñada para parejas que 
     npm run dev
     ```
 
+## Configuración local
+
+Copia `.env.example` a `.env` y completa las variables para ejecutar el servidor local. `GEMINI_API_KEY` y `VAPID_PRIVATE_KEY` solo se usan en el servidor; no las incluyas en variables con prefijo `VITE_`.
+
 ## 🌐 Despliegue en Vercel
 
 1. Sube tu código a GitHub.
 2. Conecta tu repositorio en [Vercel](https://vercel.com/).
-3. Asegúrate de añadir las **Environment Variables** (Variables de Entorno) que configuraste para Firebase en el panel de Vercel.
+3. Configura en Vercel estas variables de entorno:
+   - `GEMINI_API_KEY`: clave de Gemini; se usa solo en el servidor.
+   - `FIREBASE_API_KEY`: la misma clave web de Firebase usada como `VITE_FIREBASE_API_KEY`.
+   - `VAPID_PUBLIC_KEY` y `VAPID_PRIVATE_KEY`: un par VAPID nuevo para Web Push. Guarda la privada solo en Vercel.
+   - `VAPID_SUBJECT`: dirección `mailto:` de contacto.
+4. Aplica las variables a Production y Preview y vuelve a desplegar. Si la clave VAPID anterior ya fue publicada, rótala y deja que cada navegador vuelva a suscribirse.
 
 ---
 Creado con ❤️ para compras más inteligentes.

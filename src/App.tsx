@@ -4,7 +4,7 @@
  */
 
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
-import { GoogleGenAI, Type } from "@google/genai";
+import { Type } from "@google/genai";
 import { 
   onAuthStateChanged, 
   signInWithPopup, 
@@ -112,7 +112,7 @@ import {
   BellOff
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { analyzeItem, getSmartRecommendations, parseVoiceInput, ItemInfo, ParsedVoiceItem, searchMarketPrices, SupermarketPrice } from './lib/gemini';
+import { analyzeItem, getSmartRecommendations, parseVoiceInput, ItemInfo, ParsedVoiceItem, searchMarketPrices, SupermarketPrice, generateAIContent } from './lib/gemini';
 import { getInstantCategory } from './lib/itemCache';
 import { 
   requestFCMToken, 
@@ -170,8 +170,6 @@ const copyToClipboard = async (text: string) => {
   }
 };
 
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || '' });
-
 const COMMON_CATEGORIES = [
   'Frutas y Verduras',
   'Lácteos y Huevos',
@@ -189,14 +187,36 @@ const COMMON_CATEGORIES = [
 ];
 
 const fileToGenerativePart = async (file: File) => {
-  const base64EncodedDataPromise = new Promise((resolve) => {
-    const reader = new FileReader();
-    reader.onloadend = () => resolve((reader.result as string).split(',')[1]);
-    reader.readAsDataURL(file);
-  });
-  return {
-    inlineData: { data: await base64EncodedDataPromise as string, mimeType: file.type },
-  };
+  // Reducir las fotos antes de enviarlas para respetar el límite del endpoint serverless.
+  try {
+    const bitmap = await createImageBitmap(file);
+    const scale = Math.min(1, 1600 / Math.max(bitmap.width, bitmap.height));
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.round(bitmap.width * scale);
+    canvas.height = Math.round(bitmap.height * scale);
+    const context = canvas.getContext('2d');
+    if (!context) throw new Error('No se pudo preparar la imagen.');
+    context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+    bitmap.close();
+    const compressed = await new Promise<Blob>((resolve, reject) => {
+      canvas.toBlob(blob => blob ? resolve(blob) : reject(new Error('No se pudo comprimir la imagen.')), 'image/jpeg', 0.82);
+    });
+    const data = await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onloadend = () => resolve((reader.result as string).split(',')[1]);
+      reader.onerror = () => reject(reader.error);
+      reader.readAsDataURL(compressed);
+    });
+    return { inlineData: { data, mimeType: 'image/jpeg' } };
+  } catch {
+    const data = await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onloadend = () => resolve((reader.result as string).split(',')[1]);
+      reader.onerror = () => reject(reader.error);
+      reader.readAsDataURL(file);
+    });
+    return { inlineData: { data, mimeType: file.type } };
+  }
 };
 
 const processReceipt = async (imageFile: File) => {
@@ -204,7 +224,7 @@ const processReceipt = async (imageFile: File) => {
     const imagePart = await fileToGenerativePart(imageFile);
     const prompt = "Analiza la boleta chilena adjunta. Extrae el MONTO TOTAL, la FECHA, el NOMBRE DEL COMERCIO y la LISTA DE PRODUCTOS detallada. Para cada producto extrae el nombre, la cantidad y el precio unitario. Responde estrictamente en JSON: {'total': number, 'comercio': 'string', 'fecha': 'ISOString', 'items': [{'nombre': 'string', 'cantidad': number, 'precio': number}], 'error': null}. Si no es una boleta, responde {'error': 'invalido'}.";
 
-    const response = await ai.models.generateContent({
+    const response = await generateAIContent({
       model: "gemini-1.5-flash",
       contents: { parts: [{ text: prompt }, imagePart] },
       config: {
@@ -971,8 +991,6 @@ export default function App() {
   // Auth & Profile
   useEffect(() => {
     addLog("Configurando receptor de autenticación...");
-    const keyStatus = process.env.GEMINI_API_KEY ? "Detectada ✅" : "FALTA ❌";
-    addLog(`Estado IA: ${keyStatus}`);
     addLog(`Versión: 2.1.3 (AI Stable Build)`);
     
     const unsub = onAuthStateChanged(auth, async (u) => {
@@ -1961,7 +1979,7 @@ export default function App() {
         return;
       }
 
-      const response = await ai.models.generateContent({
+      const response = await generateAIContent({
         model: "gemini-3-flash-preview",
         contents: `Fecha actual: ${new Date().toLocaleDateString('es-CL')}.
         Historial de compras: ${JSON.stringify(historyData)}. 
@@ -4671,17 +4689,31 @@ function StatsDashboard({ onOpenMenu, history }: { onOpenMenu: () => void, histo
     let storeCounts: Record<string, number> = { 'Supermercado': 0, 'Feria': 0 };
 
     history.forEach(entry => {
-      const date = entry.timestamp?.toDate ? entry.timestamp.toDate() : (entry.timestamp ? new Date(entry.timestamp) : new Date());
-      
-      // Calculate cost: use totalCost field or sum individual items
-      let cost = entry.totalCost || 0;
-      if (!cost && entry.items) {
-        cost = entry.items.reduce((sum: number, i: any) => sum + (Number(i.price) || 0), 0);
+      // Los registros sin fecha válida no se asignan al mes actual: hacerlo inflaría el gasto.
+      let date: Date | null = null;
+      try {
+        const value = entry.timestamp?.toDate ? entry.timestamp.toDate() : entry.timestamp;
+        if (value) {
+          const parsedDate = value instanceof Date ? value : new Date(value);
+          if (!Number.isNaN(parsedDate.getTime())) date = parsedDate;
+        }
+      } catch {
+        date = null;
       }
 
-      if (date.getMonth() === currentMonth && date.getFullYear() === currentYear) {
+      // Usa el total guardado; si falta o es cero, calcula el total desde los artículos.
+      const storedCost = Number(entry.totalCost);
+      let cost = Number.isFinite(storedCost) && storedCost > 0 ? storedCost : 0;
+      if (cost === 0 && Array.isArray(entry.items)) {
+        cost = entry.items.reduce((sum: number, item: any) => {
+          const price = Number(item?.price);
+          return sum + (Number.isFinite(price) && price > 0 ? price : 0);
+        }, 0);
+      }
+
+      if (date && date.getMonth() === currentMonth && date.getFullYear() === currentYear) {
         totalThisMonth += cost;
-      } else if (date.getMonth() === prevMonth && date.getFullYear() === prevYear) {
+      } else if (date && date.getMonth() === prevMonth && date.getFullYear() === prevYear) {
         totalLastMonth += cost;
       }
 
@@ -4699,11 +4731,13 @@ function StatsDashboard({ onOpenMenu, history }: { onOpenMenu: () => void, histo
     });
 
     const starProduct = Object.entries(counts).sort((a, b) => b[1] - a[1])[0]?.[0] || 'N/A';
-    const percentChange = totalLastMonth === 0 ? 100 : Math.round(((totalThisMonth - totalLastMonth) / totalLastMonth) * 100);
+    const hasComparison = totalLastMonth > 0;
+    const percentChange = hasComparison ? Math.round(((totalThisMonth - totalLastMonth) / totalLastMonth) * 100) : 0;
 
     return {
       totalThisMonth,
       totalLastMonth,
+      hasComparison,
       percentChange,
       starProduct,
       storeCounts
@@ -4736,9 +4770,9 @@ function StatsDashboard({ onOpenMenu, history }: { onOpenMenu: () => void, histo
             </div>
             <div className={cn(
               "px-3 py-1 rounded-full text-[10px] font-black uppercase",
-              stats.percentChange >= 0 ? "bg-red-50 text-red-500" : "bg-green-50 text-green-500"
+              !stats.hasComparison ? "bg-gray-50 text-gray-500" : stats.percentChange >= 0 ? "bg-red-50 text-red-500" : "bg-green-50 text-green-500"
             )}>
-              {stats.percentChange >= 0 ? '+' : ''}{stats.percentChange}% vs mes ant.
+              {stats.hasComparison ? `${stats.percentChange >= 0 ? '+' : ''}${stats.percentChange}% vs mes ant.` : 'Sin base mes ant.'}
             </div>
           </div>
           <div className="space-y-1">
@@ -4805,8 +4839,12 @@ function StatsDashboard({ onOpenMenu, history }: { onOpenMenu: () => void, histo
         <div className="flex-1 text-center md:text-left">
           <h3 className="text-lg font-black text-text-main mb-1">Optimizando tu presupuesto</h3>
           <p className="text-xs text-text-secondary font-medium leading-relaxed">
-            Basado en tu historial, estás gastando un {Math.abs(stats.percentChange)}% {stats.percentChange > 0 ? 'más' : 'menos'} que el mes pasado. 
-            Recuerda usar el <strong>Modo Despensa</strong> para planificar y evitar compras compulsivas.
+            {!stats.hasComparison
+              ? stats.totalThisMonth === 0
+                ? 'Aún no hay gastos registrados en estos meses para comparar.'
+                : `No hay gastos del mes anterior para comparar. Este mes llevas ${stats.totalThisMonth.toLocaleString('es-CL')}.`
+              : `Basado en tu historial, estás gastando un ${Math.abs(stats.percentChange)}% ${stats.percentChange > 0 ? 'más' : stats.percentChange < 0 ? 'menos' : 'igual'} que el mes pasado.`}
+            {' '}Recuerda usar el <strong>Modo Despensa</strong> para planificar tus compras.
           </p>
         </div>
       </div>
