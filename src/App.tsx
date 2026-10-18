@@ -4671,17 +4671,31 @@ function StatsDashboard({ onOpenMenu, history }: { onOpenMenu: () => void, histo
     let storeCounts: Record<string, number> = { 'Supermercado': 0, 'Feria': 0 };
 
     history.forEach(entry => {
-      const date = entry.timestamp?.toDate ? entry.timestamp.toDate() : (entry.timestamp ? new Date(entry.timestamp) : new Date());
-      
-      // Calculate cost: use totalCost field or sum individual items
-      let cost = entry.totalCost || 0;
-      if (!cost && entry.items) {
-        cost = entry.items.reduce((sum: number, i: any) => sum + (Number(i.price) || 0), 0);
+      // Los registros sin fecha válida no se asignan al mes actual: hacerlo inflaría el gasto.
+      let date: Date | null = null;
+      try {
+        const value = entry.timestamp?.toDate ? entry.timestamp.toDate() : entry.timestamp;
+        if (value) {
+          const parsedDate = value instanceof Date ? value : new Date(value);
+          if (!Number.isNaN(parsedDate.getTime())) date = parsedDate;
+        }
+      } catch {
+        date = null;
       }
 
-      if (date.getMonth() === currentMonth && date.getFullYear() === currentYear) {
+      // Usa el total guardado; si falta o es cero, calcula el total desde los artículos.
+      const storedCost = Number(entry.totalCost);
+      let cost = Number.isFinite(storedCost) && storedCost > 0 ? storedCost : 0;
+      if (cost === 0 && Array.isArray(entry.items)) {
+        cost = entry.items.reduce((sum: number, item: any) => {
+          const price = Number(item?.price);
+          return sum + (Number.isFinite(price) && price > 0 ? price : 0);
+        }, 0);
+      }
+
+      if (date && date.getMonth() === currentMonth && date.getFullYear() === currentYear) {
         totalThisMonth += cost;
-      } else if (date.getMonth() === prevMonth && date.getFullYear() === prevYear) {
+      } else if (date && date.getMonth() === prevMonth && date.getFullYear() === prevYear) {
         totalLastMonth += cost;
       }
 
@@ -4699,7 +4713,7 @@ function StatsDashboard({ onOpenMenu, history }: { onOpenMenu: () => void, histo
     });
 
     const starProduct = Object.entries(counts).sort((a, b) => b[1] - a[1])[0]?.[0] || 'N/A';
-    const percentChange = totalLastMonth === 0 ? 100 : Math.round(((totalThisMonth - totalLastMonth) / totalLastMonth) * 100);
+    const percentChange = totalLastMonth === 0 ? (totalThisMonth > 0 ? 100 : 0) : Math.round(((totalThisMonth - totalLastMonth) / totalLastMonth) * 100);
 
     return {
       totalThisMonth,
@@ -4805,8 +4819,10 @@ function StatsDashboard({ onOpenMenu, history }: { onOpenMenu: () => void, histo
         <div className="flex-1 text-center md:text-left">
           <h3 className="text-lg font-black text-text-main mb-1">Optimizando tu presupuesto</h3>
           <p className="text-xs text-text-secondary font-medium leading-relaxed">
-            Basado en tu historial, estás gastando un {Math.abs(stats.percentChange)}% {stats.percentChange > 0 ? 'más' : 'menos'} que el mes pasado. 
-            Recuerda usar el <strong>Modo Despensa</strong> para planificar y evitar compras compulsivas.
+            {stats.totalThisMonth === 0 && stats.totalLastMonth === 0
+              ? 'Aún no hay gastos registrados para comparar entre estos meses.'
+              : `Basado en tu historial, estás gastando un ${Math.abs(stats.percentChange)}% ${stats.percentChange > 0 ? 'más' : 'menos'} que el mes pasado.`}
+            {' '}Recuerda usar el <strong>Modo Despensa</strong> para planificar tus compras.
           </p>
         </div>
       </div>
