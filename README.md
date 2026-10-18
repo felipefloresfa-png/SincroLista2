@@ -41,6 +41,10 @@ Una aplicación de lista de supermercado inteligente diseñada para parejas que 
     npm run dev
     ```
 
+## Configuración local
+
+Copia `.env.example` a `.env` y completa las variables para ejecutar el servidor local. `GEMINI_API_KEY` y `VAPID_PRIVATE_KEY` solo se usan en el servidor; no las incluyas en variables con prefijo `VITE_`.
+
 ## 🌐 Despliegue en Vercel
 
 1. Sube tu código a GitHub.
