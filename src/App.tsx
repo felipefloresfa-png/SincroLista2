@@ -138,14 +138,11 @@ function cn(...inputs: ClassValue[]) {
 
 // --- Utils ---
 const generateShortId = () => {
-  // Usamos un set de caracteres muy legible (sin O, 0, I, 1)
+  // Código de invitación privado con 80 bits de entropía criptográfica.
   const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-  let result = '';
-  // Reducimos a 8 caracteres por defecto como pidió el usuario para que sea súper fácil
-  for (let i = 0; i < 8; i++) {
-    result += chars.charAt(Math.floor(Math.random() * chars.length));
-  }
-  return result;
+  const bytes = new Uint8Array(16);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes, byte => chars[byte & 31]).join('');
 };
 
 const copyToClipboard = async (text: string) => {
@@ -821,7 +818,7 @@ export default function App() {
         if (result.token) {
           updates.fcmToken = result.token;
         }
-        if (result.pushSubscription) {
+        if (result.pushSubscription && profile?.familyId) {
           const cleanPushSub = sanitizeForFirestore(result.pushSubscription);
           updates.pushSubscription = cleanPushSub;
           const currentSubs = Array.isArray(profile?.pushSubscriptions) ? [...profile!.pushSubscriptions] : [];
@@ -834,7 +831,7 @@ export default function App() {
             const cleanSubId = `${currentUid}_${btoa(cleanPushSub.endpoint.slice(-16)).replace(/[/+=]/g, '_')}`;
             await setDoc(doc(db, 'push_subscriptions', cleanSubId), sanitizeForFirestore({
               userId: currentUid,
-              familyId: profile?.familyId || 'G759PE9Y',
+              familyId: profile.familyId,
               endpoint: cleanPushSub.endpoint,
               keys: cleanPushSub.keys,
               updatedAt: Date.now()
@@ -1007,19 +1004,14 @@ export default function App() {
           
           const userDoc = await Promise.race([docPromise, timeoutPromise]) as any;
           const storedKnownFamily = typeof window !== 'undefined' ? localStorage.getItem('sincrolista_last_known_familyId') : null;
-          const targetFamilyId = storedKnownFamily || 'G759PE9Y';
+          const targetFamilyId = inviteCodeFromUrl.trim() || storedKnownFamily || generateShortId();
 
           if (userDoc.exists()) {
             addLog("Perfil encontrado.");
             const data = userDoc.data() as UserProfile;
             
-            // Garantizar que Felipe y Valeria mantengan siempre su grupo con listas existentes (G759PE9Y)
-            const isFelipeOrPartner = (u.email && (u.email.includes('felipe') || u.email.includes('valeria'))) ||
-              (data.email && (data.email.includes('felipe') || data.email.includes('valeria'))) ||
-              (data.displayName && data.displayName.toLowerCase().includes('felipe'));
-
-            if (!data.familyId || (isFelipeOrPartner && data.familyId !== 'G759PE9Y')) {
-              addLog(`Reconectando perfil a grupo familiar principal: ${targetFamilyId}`);
+            if (!data.familyId) {
+              addLog(`Asignando código privado al perfil: ${targetFamilyId}`);
               data.familyId = targetFamilyId;
               updateDoc(userDocRef, { familyId: targetFamilyId }).catch(() => {});
             }
@@ -1055,7 +1047,7 @@ export default function App() {
           if (cached) {
             setProfile(JSON.parse(cached));
           } else {
-            const fallbackFamily = localStorage.getItem('sincrolista_last_known_familyId') || 'G759PE9Y';
+            const fallbackFamily = inviteCodeFromUrl.trim() || localStorage.getItem('sincrolista_last_known_familyId') || generateShortId();
             setProfile({
               uid: u.uid,
               email: u.email || '',
@@ -1092,7 +1084,7 @@ export default function App() {
       email: '',
       displayName: 'Usuario Invitado',
       photoURL: `https://ui-avatars.com/api/?name=Demo&background=random&color=fff`,
-      familyId: 'G759PE9Y'
+      familyId: `demo-${generateShortId()}`
     };
     setUser({ uid: 'demo-user' } as any);
     setProfile(demoProfile);
@@ -1122,7 +1114,7 @@ export default function App() {
       const u = result.user;
       addLog(`Sesión OK (ID: ${u.uid.substring(0,5)})`);
       
-      const fallbackFamily = inviteCode?.trim() || localStorage.getItem('sincrolista_last_known_familyId') || 'G759PE9Y';
+      const fallbackFamily = inviteCode?.trim() || localStorage.getItem('sincrolista_last_known_familyId') || generateShortId();
       const newProfile: UserProfile = {
         uid: u.uid,
         email: '',
@@ -1189,7 +1181,7 @@ export default function App() {
       const userRef = doc(db, 'users', u.uid);
       const userSnap = await getDoc(userRef);
       
-      const defaultFamily = inviteCode?.trim() || localStorage.getItem('sincrolista_last_known_familyId') || 'G759PE9Y';
+      const defaultFamily = inviteCode?.trim() || localStorage.getItem('sincrolista_last_known_familyId') || generateShortId();
       let finalProfile: UserProfile;
       if (!userSnap.exists()) {
         finalProfile = {
@@ -1202,13 +1194,9 @@ export default function App() {
         await setDoc(userRef, finalProfile);
       } else {
         finalProfile = userSnap.data() as UserProfile;
-        // Si el usuario es Felipe o Valeria y está en un grupo vacío, reconectarlo a G759PE9Y
-        const isFelipeOrPartner = (u.email && (u.email.includes('felipe') || u.email.includes('valeria'))) ||
-          (finalProfile.displayName && finalProfile.displayName.toLowerCase().includes('felipe'));
-
-        if (!finalProfile.familyId || (isFelipeOrPartner && finalProfile.familyId !== 'G759PE9Y')) {
-          finalProfile.familyId = 'G759PE9Y';
-          await updateDoc(userRef, { familyId: 'G759PE9Y' });
+        if (!finalProfile.familyId) {
+          finalProfile.familyId = defaultFamily;
+          await updateDoc(userRef, { familyId: defaultFamily });
         } else if (inviteCode?.trim() && finalProfile.familyId !== inviteCode.trim()) {
            finalProfile.familyId = inviteCode.trim();
            await updateDoc(userRef, { familyId: finalProfile.familyId });
