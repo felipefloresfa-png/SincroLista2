@@ -4,7 +4,7 @@
  */
 
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
-import { GoogleGenAI, Type } from "@google/genai";
+import { Type } from "@google/genai";
 import { 
   onAuthStateChanged, 
   signInWithPopup, 
@@ -112,7 +112,7 @@ import {
   BellOff
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { analyzeItem, getSmartRecommendations, parseVoiceInput, ItemInfo, ParsedVoiceItem, searchMarketPrices, SupermarketPrice } from './lib/gemini';
+import { analyzeItem, getSmartRecommendations, parseVoiceInput, ItemInfo, ParsedVoiceItem, searchMarketPrices, SupermarketPrice, generateAIContent } from './lib/gemini';
 import { getInstantCategory } from './lib/itemCache';
 import { 
   requestFCMToken, 
@@ -170,8 +170,6 @@ const copyToClipboard = async (text: string) => {
   }
 };
 
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || '' });
-
 const COMMON_CATEGORIES = [
   'Frutas y Verduras',
   'Lácteos y Huevos',
@@ -204,7 +202,7 @@ const processReceipt = async (imageFile: File) => {
     const imagePart = await fileToGenerativePart(imageFile);
     const prompt = "Analiza la boleta chilena adjunta. Extrae el MONTO TOTAL, la FECHA, el NOMBRE DEL COMERCIO y la LISTA DE PRODUCTOS detallada. Para cada producto extrae el nombre, la cantidad y el precio unitario. Responde estrictamente en JSON: {'total': number, 'comercio': 'string', 'fecha': 'ISOString', 'items': [{'nombre': 'string', 'cantidad': number, 'precio': number}], 'error': null}. Si no es una boleta, responde {'error': 'invalido'}.";
 
-    const response = await ai.models.generateContent({
+    const response = await generateAIContent({
       model: "gemini-1.5-flash",
       contents: { parts: [{ text: prompt }, imagePart] },
       config: {
@@ -971,8 +969,6 @@ export default function App() {
   // Auth & Profile
   useEffect(() => {
     addLog("Configurando receptor de autenticación...");
-    const keyStatus = process.env.GEMINI_API_KEY ? "Detectada ✅" : "FALTA ❌";
-    addLog(`Estado IA: ${keyStatus}`);
     addLog(`Versión: 2.1.3 (AI Stable Build)`);
     
     const unsub = onAuthStateChanged(auth, async (u) => {
@@ -1961,7 +1957,7 @@ export default function App() {
         return;
       }
 
-      const response = await ai.models.generateContent({
+      const response = await generateAIContent({
         model: "gemini-3-flash-preview",
         contents: `Fecha actual: ${new Date().toLocaleDateString('es-CL')}.
         Historial de compras: ${JSON.stringify(historyData)}. 
