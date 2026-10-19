@@ -489,13 +489,8 @@ export async function subscribeToWebPush(): Promise<PushSubscriptionData | null>
 
 // Envía la notificación Web Push a los dispositivos suscritos de la pareja a través del servidor
 export async function sendPushNotificationToPartners(
-  subscriptions: PushSubscriptionData[],
   notification: { title: string; body: string; tag?: string; data?: any }
 ): Promise<{ success: boolean; sent?: number }> {
-  if (!subscriptions || subscriptions.length === 0) {
-    return { success: true, sent: 0 };
-  }
-
   try {
     const user = getAuth(app).currentUser;
     if (!user) return { success: false };
@@ -506,10 +501,7 @@ export async function sendPushNotificationToPartners(
         'Content-Type': 'application/json',
         Authorization: `Bearer ${idToken}`,
       },
-      body: JSON.stringify({
-        subscriptions,
-        notification,
-      }),
+      body: JSON.stringify({ notification }),
     });
     if (!res.ok) {
       const text = await res.text();
