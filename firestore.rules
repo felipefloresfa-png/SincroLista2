@@ -13,20 +13,41 @@ service cloud.firestore {
     function existing() { return resource.data; }
     function getUserFamilyId() { return get(/databases/$(database)/documents/users/$(request.auth.uid)).data.familyId; }
     function isAdmin() { return isSignedIn() && exists(/databases/$(database)/documents/admins/$(request.auth.uid)); }
+    function isValidFamilyInvite(inviteId, familyId) {
+      return inviteId is string && inviteId.size() >= 20 && inviteId.size() <= 128
+        && exists(/databases/$(database)/documents/family_invites/$(inviteId))
+        && get(/databases/$(database)/documents/family_invites/$(inviteId)).data.familyId == familyId;
+    }
 
     // 1. Users
     match /users/{userId} {
       allow get: if isSignedIn() && (request.auth.uid == userId || resource.data.familyId == getUserFamilyId() || isAdmin());
       allow list: if isSignedIn() && (resource.data.familyId == getUserFamilyId() || isAdmin());
-      allow create: if isSignedIn() && request.auth.uid == userId && isValidUser(incoming());
+      allow create: if isSignedIn() && request.auth.uid == userId && isValidUser(incoming())
+                    && incoming().familyId == request.auth.uid;
       allow update: if isSignedIn() && request.auth.uid == userId && isValidUser(incoming())
-                    && incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'photoURL', 'favoriteItems', 'familyId', 'fcmToken', 'pushNotificationsEnabled', 'pushSubscription', 'pushSubscriptions']);
+                    && incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'photoURL', 'favoriteItems', 'familyId', 'joinInviteId', 'fcmToken', 'pushNotificationsEnabled', 'pushSubscription', 'pushSubscriptions'])
+                    && (incoming().familyId == existing().familyId
+                        || (!existing().keys().hasAny(['familyId']) && incoming().familyId == request.auth.uid)
+                        || (incoming().keys().hasAny(['joinInviteId']) && isValidFamilyInvite(incoming().joinInviteId, incoming().familyId)));
       
       function isValidUser(data) {
         return data.uid == request.auth.uid
           && data.displayName is string && data.displayName.size() <= 100
           && data.familyId is string && data.familyId.size() <= 50;
       }
+    }
+
+    // Invitaciones privadas: conocer el ID aleatorio autoriza a unirse; no se pueden enumerar desde otros hogares.
+    match /family_invites/{inviteId} {
+      allow get: if isSignedIn();
+      allow list: if isSignedIn() && resource.data.familyId == getUserFamilyId();
+      allow create: if isSignedIn()
+                    && incoming().keys().hasOnly(['familyId', 'createdBy', 'createdAt'])
+                    && incoming().familyId == getUserFamilyId()
+                    && incoming().createdBy == request.auth.uid
+                    && incoming().createdAt is timestamp;
+      allow update, delete: if false;
     }
 
     // 2. Lists
@@ -91,8 +112,30 @@ service cloud.firestore {
     match /push_subscriptions/{subId} {
       allow read: if isSignedIn() && (resource.data.familyId == getUserFamilyId() || isAdmin());
       allow list: if isSignedIn() && (resource.data.familyId == getUserFamilyId() || isAdmin());
-      allow create, update: if isSignedIn() && incoming().familyId == getUserFamilyId();
-      allow delete: if isSignedIn() && (existing().familyId == getUserFamilyId() || isAdmin());
+      allow create: if isSignedIn()
+                    && incoming().familyId == getUserFamilyId()
+                    && incoming().userId == request.auth.uid
+                    && isValidPushSubscription(incoming());
+      allow update: if isSignedIn()
+                    && existing().familyId == getUserFamilyId()
+                    && existing().userId == request.auth.uid
+                    && incoming().familyId == existing().familyId
+                    && incoming().userId == existing().userId
+                    && incoming().diff(existing()).affectedKeys().hasOnly(['userId', 'familyId', 'endpoint', 'keys', 'updatedAt'])
+                    && isValidPushSubscription(incoming());
+      allow delete: if isSignedIn()
+                    && ((existing().familyId == getUserFamilyId() && existing().userId == request.auth.uid) || isAdmin());
+
+      function isValidPushSubscription(data) {
+        return data.userId is string && data.userId == request.auth.uid
+          && data.familyId is string && data.familyId.size() <= 50
+          && data.endpoint is string && data.endpoint.size() <= 4096
+          && data.endpoint.matches('^https://.*')
+          && data.keys is map
+          && data.keys.p256dh is string && data.keys.p256dh.size() <= 512
+          && data.keys.auth is string && data.keys.auth.size() <= 512
+          && data.updatedAt is number;
+      }
     }
   }
 }
