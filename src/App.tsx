@@ -167,6 +167,16 @@ const copyToClipboard = async (text: string) => {
   }
 };
 
+const joinWithFamilyInvite = async (userId: string, inviteId: string) => {
+  const inviteRef = doc(db, 'family_invites', inviteId);
+  const inviteSnap = await getDoc(inviteRef);
+  if (!inviteSnap.exists()) throw new Error('El código de invitación no es válido.');
+  const familyId = inviteSnap.data().familyId;
+  if (typeof familyId !== 'string' || !familyId) throw new Error('La invitación no es válida.');
+  await updateDoc(doc(db, 'users', userId), { familyId, joinInviteId: inviteId });
+  return familyId;
+};
+
 const COMMON_CATEGORIES = [
   'Frutas y Verduras',
   'Lácteos y Huevos',
@@ -288,7 +298,8 @@ interface UserProfile {
   displayName: string;
   photoURL: string;
   familyId: string;
-  favoriteItems?: string[];
+  joinInviteId?: string;
+  favoriteItems?: string;
   fcmToken?: string;
   pushNotificationsEnabled?: boolean;
   pushSubscription?: PushSubscriptionData;
@@ -598,6 +609,7 @@ function VoiceInputButton({ onItemsFound, onStatusChange }: {
 export default function App() {
   const [user, setUser] = useState<FirebaseUser | null>(null);
   const [profile, setProfile] = useState<UserProfile | null>(null);
+  const [familyInviteCode, setFamilyInviteCode] = useState('');
   const authFlowInProgressRef = useRef(false);
   const [isInitializing, setIsInitializing] = useState(true);
   const [inviteCodeFromUrl, setInviteCodeFromUrl] = useState<string>(() => {
@@ -1010,12 +1022,7 @@ export default function App() {
           const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error("Conexión Firestore lenta")), 3000));
           
           const userDoc = await Promise.race([docPromise, timeoutPromise]) as any;
-          const cachedProfileRaw = typeof window !== 'undefined' ? localStorage.getItem(`profile_${u.uid}`) : null;
-          let cachedFamilyId = '';
-          try {
-            cachedFamilyId = cachedProfileRaw ? (JSON.parse(cachedProfileRaw) as UserProfile).familyId || '' : '';
-          } catch {}
-          const targetFamilyId = inviteCodeFromUrl.trim() || cachedFamilyId || generateShortId();
+          const targetFamilyId = u.uid;
 
           if (userDoc.exists()) {
             addLog("Perfil encontrado.");
@@ -1024,7 +1031,7 @@ export default function App() {
             if (!data.familyId) {
               addLog(`Asignando código privado al perfil: ${targetFamilyId}`);
               data.familyId = targetFamilyId;
-              updateDoc(userDocRef, { familyId: targetFamilyId }).catch(() => {});
+              await updateDoc(userDocRef, { familyId: targetFamilyId });
             }
             
             try {
@@ -1034,6 +1041,10 @@ export default function App() {
               }
             } catch {}
 
+            if (inviteCodeFromUrl.trim()) {
+              data.familyId = await joinWithFamilyInvite(u.uid, inviteCodeFromUrl.trim());
+              data.joinInviteId = inviteCodeFromUrl.trim();
+            }
             setProfile(data);
           } else {
             addLog("Usuario nuevo (asociando perfil a grupo familiar)...");
@@ -1044,8 +1055,12 @@ export default function App() {
               photoURL: u.photoURL || `https://ui-avatars.com/api/?name=${encodeURIComponent(u.displayName || 'Felipe')}&background=random&color=fff`,
               familyId: targetFamilyId
             };
+            await setDoc(userDocRef, newProfile);
+            if (inviteCodeFromUrl.trim()) {
+              newProfile.familyId = await joinWithFamilyInvite(u.uid, inviteCodeFromUrl.trim());
+              newProfile.joinInviteId = inviteCodeFromUrl.trim();
+            }
             setProfile(newProfile);
-            setDoc(userDocRef, newProfile).catch(() => {});
             try {
               localStorage.setItem('sincrolista_last_known_familyId', targetFamilyId);
               localStorage.setItem(`profile_${u.uid}`, JSON.stringify(newProfile));
@@ -1058,7 +1073,7 @@ export default function App() {
           if (cached) {
             setProfile(JSON.parse(cached));
           } else {
-            const fallbackFamily = inviteCodeFromUrl.trim() || generateShortId();
+            const fallbackFamily = u.uid;
             setProfile({
               uid: u.uid,
               email: u.email || '',
@@ -1120,7 +1135,7 @@ export default function App() {
         await auth.signOut();
       }
 
-      const fallbackFamily = inviteCode?.trim() || generateShortId();
+      const fallbackFamily = result.user.uid;
       // Solicitamos sesión con un margen de tiempo más amplio
       const result = await signInAnonymously(auth);
       
@@ -1138,6 +1153,10 @@ export default function App() {
       setStatusMessage("Verificando permisos...");
       addLog("Guardando perfil en la nube...");
       await setDoc(doc(db, 'users', u.uid), newProfile);
+      if (inviteCode?.trim()) {
+        newProfile.familyId = await joinWithFamilyInvite(u.uid, inviteCode.trim());
+        newProfile.joinInviteId = inviteCode.trim();
+      }
       setUser(u);
       setProfile(newProfile);
       try {
@@ -1191,7 +1210,7 @@ export default function App() {
       const userRef = doc(db, 'users', u.uid);
       const userSnap = await getDoc(userRef);
       
-      const defaultFamily = inviteCode?.trim() || generateShortId();
+      const defaultFamily = u.uid;
       let finalProfile: UserProfile;
       if (!userSnap.exists()) {
         finalProfile = {
@@ -1207,11 +1226,12 @@ export default function App() {
         if (!finalProfile.familyId) {
           finalProfile.familyId = defaultFamily;
           await updateDoc(userRef, { familyId: defaultFamily });
-        } else if (inviteCode?.trim() && finalProfile.familyId !== inviteCode.trim()) {
-           finalProfile.familyId = inviteCode.trim();
-           await updateDoc(userRef, { familyId: finalProfile.familyId });
-           addLog("Unido a nuevo grupo.");
         }
+      }
+      if (inviteCode?.trim()) {
+        finalProfile.familyId = await joinWithFamilyInvite(u.uid, inviteCode.trim());
+        finalProfile.joinInviteId = inviteCode.trim();
+        addLog("Unido a nuevo grupo.");
       }
       
       setUser(u);
@@ -1237,6 +1257,34 @@ export default function App() {
       setStatusMessage('');
     }
   };
+
+  // Mantener un código de invitación aleatorio separado del identificador interno del hogar.
+  useEffect(() => {
+    if (!profile?.uid || !profile.familyId || profile.uid === 'demo-user') return;
+    let active = true;
+    (async () => {
+      try {
+        const invites = query(collection(db, 'family_invites'), where('familyId', '==', profile.familyId), limit(1));
+        const existing = await getDocs(invites);
+        if (!active) return;
+        if (!existing.empty) {
+          setFamilyInviteCode(existing.docs[0].id);
+          return;
+        }
+        const inviteRef = doc(collection(db, 'family_invites'));
+        await setDoc(inviteRef, {
+          familyId: profile.familyId,
+          createdBy: profile.uid,
+          createdAt: serverTimestamp()
+        });
+        if (active) setFamilyInviteCode(inviteRef.id);
+      } catch (error) {
+        console.warn('No se pudo preparar el código de invitación:', error);
+        if (active) setFamilyInviteCode('');
+      }
+    })();
+    return () => { active = false; };
+  }, [profile?.uid, profile?.familyId]);
 
   // Sync Lists & Family Members
   useEffect(() => {
@@ -2103,14 +2151,14 @@ export default function App() {
   };
 
   const joinFamily = async (code?: string) => {
-    const familyCode = code || '';
+    const familyCode = code?.trim() || '';
     if (familyCode && profile) {
       try {
         addLog(`Uniéndose a grupo: ${familyCode.substring(0,5)}...`);
-        await updateDoc(doc(db, 'users', profile.uid), { familyId: familyCode.trim() });
-        setProfile(prev => prev ? { ...prev, familyId: familyCode.trim() } : null);
+        const familyId = await joinWithFamilyInvite(profile.uid, familyCode);
+        setProfile(prev => prev ? { ...prev, familyId, joinInviteId: familyCode } : null);
         setActiveListId(null); // Reset to allow first list of new family to be selected
-        addLog("Éxito: ID de grupo actualizado.");
+        addLog("Éxito: invitación validada y grupo actualizado.");
         setPromptConfig(prev => ({ ...prev, isOpen: false }));
       } catch (e: any) {
         addLog(`Error al unirse: ${e.code}`);
@@ -3144,9 +3192,9 @@ export default function App() {
 
                 <div className="bg-accent/5 border border-dashed border-accent/20 rounded-2xl p-5 space-y-4">
                   <p className="text-[10px] font-black text-accent uppercase tracking-widest text-center">Invitar a alguien</p>
-                  <CopyCodeComponent code={profile?.familyId || ''} />
+                  <CopyCodeComponent code={familyInviteCode} />
                   <p className="text-[10px] text-text-secondary text-center leading-relaxed px-4">
-                    Comparte este código para que otra persona vea tus mismas listas en tiempo real.
+                    Comparte esta invitación privada para que otra persona se una a tus listas compartidas.
                   </p>
 
                   <div className="pt-2">
