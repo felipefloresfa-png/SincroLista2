@@ -1412,11 +1412,11 @@ export default function App() {
                       : `📝 Lista actualizada`;
               const body = `${partnerName} ${actionVerb}: ${data.itemName}`;
               
-              showLocalNotification(title, {
-                body,
-                soundType: data.type === 'check' ? 'check' : 'add',
-                tag: `activity-${docId}`
-              });
+              // En primer plano usamos el aviso dentro de la app. El Service Worker
+              // se encarga de la notificación del sistema cuando la app está en segundo plano.
+              if (document.visibilityState === 'visible') {
+                playChimeSound(data.type === 'check' ? 'check' : 'add');
+              }
 
               addNotification(body, data.type === 'check' ? 'success' : 'info');
 
