@@ -1045,6 +1045,10 @@ export default function App() {
               data.familyId = await joinWithFamilyInvite(u.uid, inviteCodeFromUrl.trim());
               data.joinInviteId = inviteCodeFromUrl.trim();
             }
+            try {
+              localStorage.setItem('sincrolista_last_known_familyId', data.familyId);
+              localStorage.setItem(`profile_${u.uid}`, JSON.stringify(data));
+            } catch {}
             setProfile(data);
           } else {
             addLog("Usuario nuevo (asociando perfil a grupo familiar)...");
@@ -1062,7 +1066,7 @@ export default function App() {
             }
             setProfile(newProfile);
             try {
-              localStorage.setItem('sincrolista_last_known_familyId', targetFamilyId);
+              localStorage.setItem('sincrolista_last_known_familyId', newProfile.familyId);
               localStorage.setItem(`profile_${u.uid}`, JSON.stringify(newProfile));
             } catch {}
           }
