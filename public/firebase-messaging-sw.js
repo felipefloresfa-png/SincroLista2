@@ -23,24 +23,30 @@ const firebaseConfig = {
   appId: "1:972307779368:web:50cb39daf8649c0643ca1d"
 };
 
+async function hasVisibleAppWindow() {
+  const clientsList = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+  return clientsList.some((client) => client.visibilityState === 'visible');
+}
+
 try {
   firebase.initializeApp(firebaseConfig);
   const messaging = firebase.messaging();
 
-  messaging.onBackgroundMessage((payload) => {
-    console.log('[firebase-messaging-sw.js] Mensaje recibido en segundo plano:', payload);
+  messaging.onBackgroundMessage(async (payload) => {
+    // Si la app está abierta, el flujo en vivo muestra el aviso dentro de la interfaz.
+    if (await hasVisibleAppWindow()) return;
+
     const title = payload.notification?.title || payload.data?.title || 'SincroLista 🛒';
-    const uniqueTag = payload.data?.tag || `sincrolista-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
     const options = {
-      body: payload.notification?.body || payload.data?.body || 'Actualización en tu lista compartida',
+      body: payload.notification?.body || payload.data?.body || 'Tu lista compartida se actualizó. Abre SincroLista para ver los cambios.',
       icon: '/icon-192.png',
       badge: '/badge-72.png',
       vibrate: [200, 100, 200],
-      tag: uniqueTag,
-      renotify: true,
+      tag: 'sincrolista-list-update',
+      renotify: false,
       data: payload.data || {},
     };
-    self.registration.showNotification(title, options);
+    await self.registration.showNotification(title, options);
   });
 } catch (e) {
   console.warn('[firebase-messaging-sw.js] Error inicializando Firebase Messaging compat:', e);
@@ -48,34 +54,36 @@ try {
 
 // Fallback para eventos de Push nativos
 self.addEventListener('push', (event) => {
-  if (event.data) {
+  if (!event.data) return;
+
+  event.waitUntil((async () => {
+    // Evita duplicar el aviso si la app visible ya notificó el cambio en pantalla.
+    if (await hasVisibleAppWindow()) return;
+
     try {
       const data = event.data.json();
       const title = data.title || data.notification?.title || 'SincroLista 🛒';
-      const body = data.body || data.notification?.body || 'Un producto fue agregado o marcado';
-      const uniqueTag = data.tag || `sincrolista-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
+      const body = data.body || data.notification?.body || 'Tu lista compartida se actualizó. Abre SincroLista para ver los cambios.';
       const options = {
         body,
         icon: '/icon-192.png',
         badge: '/badge-72.png',
         vibrate: [200, 100, 200],
-        tag: uniqueTag,
-        renotify: true,
+        tag: 'sincrolista-list-update',
+        renotify: false,
         data: data.data || data,
       };
-      event.waitUntil(self.registration.showNotification(title, options));
+      await self.registration.showNotification(title, options);
     } catch {
       const text = event.data.text();
-      event.waitUntil(
-        self.registration.showNotification('SincroLista 🛒', {
-          body: text || 'Tu pareja actualizó la lista de compras.',
-          icon: '/icon-192.png',
-          tag: `sincrolista-${Date.now()}`,
-          renotify: true,
-        })
-      );
+      await self.registration.showNotification('SincroLista 🛒', {
+        body: text || 'Tu lista compartida se actualizó. Abre SincroLista para ver los cambios.',
+        icon: '/icon-192.png',
+        tag: 'sincrolista-list-update',
+        renotify: false,
+      });
     }
-  }
+  })());
 });
 
 // Manejo del click en la notificación
