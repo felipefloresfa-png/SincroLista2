@@ -91,8 +91,30 @@ service cloud.firestore {
     match /push_subscriptions/{subId} {
       allow read: if isSignedIn() && (resource.data.familyId == getUserFamilyId() || isAdmin());
       allow list: if isSignedIn() && (resource.data.familyId == getUserFamilyId() || isAdmin());
-      allow create, update: if isSignedIn() && incoming().familyId == getUserFamilyId();
-      allow delete: if isSignedIn() && (existing().familyId == getUserFamilyId() || isAdmin());
+      allow create: if isSignedIn()
+                    && incoming().familyId == getUserFamilyId()
+                    && incoming().userId == request.auth.uid
+                    && isValidPushSubscription(incoming());
+      allow update: if isSignedIn()
+                    && existing().familyId == getUserFamilyId()
+                    && existing().userId == request.auth.uid
+                    && incoming().familyId == existing().familyId
+                    && incoming().userId == existing().userId
+                    && incoming().diff(existing()).affectedKeys().hasOnly(['userId', 'familyId', 'endpoint', 'keys', 'updatedAt'])
+                    && isValidPushSubscription(incoming());
+      allow delete: if isSignedIn()
+                    && ((existing().familyId == getUserFamilyId() && existing().userId == request.auth.uid) || isAdmin());
+
+      function isValidPushSubscription(data) {
+        return data.userId is string && data.userId == request.auth.uid
+          && data.familyId is string && data.familyId.size() <= 50
+          && data.endpoint is string && data.endpoint.size() <= 4096
+          && data.endpoint.matches('^https://.*')
+          && data.keys is map
+          && data.keys.p256dh is string && data.keys.p256dh.size() <= 512
+          && data.keys.auth is string && data.keys.auth.size() <= 512
+          && data.updatedAt is number;
+      }
     }
   }
 }
