@@ -1135,11 +1135,11 @@ export default function App() {
         await auth.signOut();
       }
 
-      const fallbackFamily = result.user.uid;
       // Solicitamos sesión con un margen de tiempo más amplio
       const result = await signInAnonymously(auth);
       
       const u = result.user;
+      const fallbackFamily = u.uid;
       addLog(`Sesión OK (ID: ${u.uid.substring(0,5)})`);
       
       const newProfile: UserProfile = {
@@ -1160,7 +1160,7 @@ export default function App() {
       setUser(u);
       setProfile(newProfile);
       try {
-        localStorage.setItem('sincrolista_last_known_familyId', fallbackFamily);
+        localStorage.setItem('sincrolista_last_known_familyId', newProfile.familyId);
         localStorage.setItem(`profile_${u.uid}`, JSON.stringify(newProfile));
       } catch {}
       addLog("Perfil sincronizado con éxito.");
@@ -2162,7 +2162,7 @@ export default function App() {
         setPromptConfig(prev => ({ ...prev, isOpen: false }));
       } catch (e: any) {
         addLog(`Error al unirse: ${e.code}`);
-        alert("No se pudo actualizar el ID. Revisa tu conexión.");
+        alert("No se pudo unir. Verifica que el código de invitación sea válido y vuelve a intentarlo.");
       }
     }
   };
