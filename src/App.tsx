@@ -598,6 +598,7 @@ function VoiceInputButton({ onItemsFound, onStatusChange }: {
 export default function App() {
   const [user, setUser] = useState<FirebaseUser | null>(null);
   const [profile, setProfile] = useState<UserProfile | null>(null);
+  const authFlowInProgressRef = useRef(false);
   const [isInitializing, setIsInitializing] = useState(true);
   const [inviteCodeFromUrl, setInviteCodeFromUrl] = useState<string>(() => {
     const params = new URLSearchParams(window.location.search);
@@ -993,7 +994,13 @@ export default function App() {
     const unsub = onAuthStateChanged(auth, async (u) => {
       addLog(`Estado Auth: ${u ? 'Sesión activa (' + u.uid.substring(0,5) + '...)' : 'Sin sesión'}`);
       setUser(u);
-      
+
+      // Los handlers de acceso crean o recuperan el perfil y deben ser los únicos que lo escriban.
+      if (u && authFlowInProgressRef.current) {
+        setIsInitializing(false);
+        return;
+      }
+
       if (u) {
         setStatusMessage("Sincronizando perfil...");
         try {
@@ -1104,6 +1111,7 @@ export default function App() {
     if (!displayName.trim()) return;
     
     try {
+      authFlowInProgressRef.current = true;
       setIsLoggingIn(true);
       setStatusMessage("Conectando con Firebase...");
       addLog("Solicitando sesión segura...");
@@ -1112,13 +1120,13 @@ export default function App() {
         await auth.signOut();
       }
 
+      const fallbackFamily = inviteCode?.trim() || generateShortId();
       // Solicitamos sesión con un margen de tiempo más amplio
       const result = await signInAnonymously(auth);
       
       const u = result.user;
       addLog(`Sesión OK (ID: ${u.uid.substring(0,5)})`);
       
-      const fallbackFamily = inviteCode?.trim() || generateShortId();
       const newProfile: UserProfile = {
         uid: u.uid,
         email: '',
@@ -1128,27 +1136,23 @@ export default function App() {
       };
       
       setStatusMessage("Verificando permisos...");
-      // LOGIN OPTIMISTA: Guardamos en state inmediatamente
+      addLog("Guardando perfil en la nube...");
+      await setDoc(doc(db, 'users', u.uid), newProfile);
       setUser(u);
       setProfile(newProfile);
       try {
         localStorage.setItem('sincrolista_last_known_familyId', fallbackFamily);
         localStorage.setItem(`profile_${u.uid}`, JSON.stringify(newProfile));
       } catch {}
-
-      // Intentamos guardar en Firestore sin bloquear la UI
-      addLog("Actualizando perfil en la nube...");
-      setDoc(doc(db, 'users', u.uid), newProfile)
-        .then(() => addLog("Perfil sincronizado con éxito."))
-        .catch(err => {
-          addLog(`AVISO: Escritura denegada (${err.code}).`);
-          if (err.code === 'permission-denied') {
-            addLog("Tip: Abre las reglas en Firebase Console.");
-          }
-        });
+      addLog("Perfil sincronizado con éxito.");
       
     } catch (e: any) {
       addLog(`Fallo: ${e.code || e.message}`);
+      if (auth.currentUser && authFlowInProgressRef.current) {
+        await auth.signOut().catch(() => {});
+        setUser(null);
+        setProfile(null);
+      }
       let errorMsg = "Error al conectar con Firebase.";
       
       if (e.code === 'auth/operation-not-allowed') {
@@ -1159,6 +1163,7 @@ export default function App() {
       
       alert(errorMsg);
     } finally {
+      authFlowInProgressRef.current = false;
       setIsLoggingIn(false);
       setStatusMessage('');
     }
@@ -1174,6 +1179,7 @@ export default function App() {
 
   const handleGoogleLogin = async (inviteCode?: string) => {
     try {
+      authFlowInProgressRef.current = true;
       setIsLoggingIn(true);
       setStatusMessage("Conectando con Google...");
       const provider = new GoogleAuthProvider();
@@ -1217,10 +1223,16 @@ export default function App() {
       addLog("Sesión recuperada con éxito.");
     } catch (e: any) {
       addLog(`Error Google: ${e.code}`);
+      if (auth.currentUser && !profile) {
+        await auth.signOut().catch(() => {});
+        setUser(null);
+        setProfile(null);
+      }
       if (e.code === 'auth/operation-not-allowed') {
         alert("Debes habilitar Google en Firebase Console > Authentication > Sign-in method.");
       }
     } finally {
+      authFlowInProgressRef.current = false;
       setIsLoggingIn(false);
       setStatusMessage('');
     }
@@ -1577,52 +1589,14 @@ export default function App() {
 
     const body = `${partnerName} ${actionVerb}: ${itemName}`;
 
-    // 1. Recolectar suscripciones Web Push de los miembros del grupo (excepto el usuario actual)
-    const partnerSubs: PushSubscriptionData[] = [];
-    syncedUsers.forEach(u => {
-      if (u.uid !== profile.uid) {
-        if (Array.isArray(u.pushSubscriptions)) {
-          u.pushSubscriptions.forEach(s => {
-            if (s?.endpoint && s?.keys?.p256dh && !partnerSubs.some(p => p.endpoint === s.endpoint)) {
-              partnerSubs.push(s);
-            }
-          });
-        }
-        if (u.pushSubscription?.endpoint && u.pushSubscription?.keys?.p256dh && !partnerSubs.some(p => p.endpoint === u.pushSubscription!.endpoint)) {
-          partnerSubs.push(u.pushSubscription);
-        }
-      }
+    sendPushNotificationToPartners({
+      title,
+      body,
+      tag: `sincro-${type}-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+      data: { url: '/', type, itemName }
+    }).catch(err => {
+      console.debug('Aviso al enviar push a pareja:', err);
     });
-
-    // 2. Si syncedUsers aún no tiene las suscripciones, consultar también la colección push_subscriptions
-    try {
-      const qPush = query(collection(db, 'push_subscriptions'), where('familyId', '==', profile.familyId));
-      const snap = await getDocs(qPush);
-      snap.forEach(docSnap => {
-        const data = docSnap.data() as any;
-        if (data.userId !== profile.uid && data.endpoint && data.keys?.p256dh) {
-          if (!partnerSubs.some(s => s.endpoint === data.endpoint)) {
-            partnerSubs.push({
-              endpoint: data.endpoint,
-              keys: data.keys
-            });
-          }
-        }
-      });
-    } catch (pushLookupErr) {
-      console.debug('Aviso consultando colección push_subscriptions:', pushLookupErr);
-    }
-
-    if (partnerSubs.length > 0) {
-      sendPushNotificationToPartners(partnerSubs, {
-        title,
-        body,
-        tag: `sincro-${type}-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
-        data: { url: '/', familyId: profile.familyId, type, itemName }
-      }).catch(err => {
-        console.debug('Aviso al enviar push a pareja:', err);
-      });
-    }
   };
 
   const logActivity = async (type: ActivityItem['type'], itemName: string, category?: string) => {
