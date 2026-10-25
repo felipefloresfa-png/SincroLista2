@@ -1,5 +1,6 @@
 export const NOTIFICATION_QUIET_WINDOW_MS = 60_000;
 export const NOTIFICATION_PROGRESS_INTERVAL_MS = 5 * 60_000;
+const RETRY_INTERVAL_MS = 60_000;
 const MAX_PENDING_AGE_MS = 12 * 60 * 60_000;
 const MAX_REMEMBERED_EVENT_IDS = 1_000;
 
@@ -119,9 +120,10 @@ export class NotificationBatcher {
         events,
         sentIds: Array.isArray(saved.sentIds) ? saved.sentIds.filter(id => typeof id === 'string').slice(-MAX_REMEMBERED_EVENT_IDS) : [],
         lastSentAt: Number.isFinite(saved.lastSentAt) ? saved.lastSentAt : 0,
+        lastFailedAt: Number.isFinite(saved.lastFailedAt) ? saved.lastFailedAt : 0,
       };
     } catch {
-      return { events: [], sentIds: [], lastSentAt: 0 };
+      return { events: [], sentIds: [], lastSentAt: 0, lastFailedAt: 0 };
     }
   }
 
@@ -163,7 +165,10 @@ export class NotificationBatcher {
     const progressBase = this.state.lastSentAt > 0 ? this.state.lastSentAt : firstAt;
     const progressAt = progressBase + this.progressIntervalMs;
     const quietAt = lastAt + this.quietWindowMs;
-    const dueAt = Math.min(progressAt, quietAt);
+    const normalDueAt = Math.min(progressAt, quietAt);
+    const dueAt = this.state.lastFailedAt > 0
+      ? Math.max(normalDueAt, this.state.lastFailedAt + RETRY_INTERVAL_MS)
+      : normalDueAt;
 
     this.timer = this.setTimer(() => {
       this.timer = null;
@@ -195,7 +200,9 @@ export class NotificationBatcher {
       if (succeeded) {
         this.state.sentIds = [...this.state.sentIds, ...batch.map(event => event.id)].slice(-MAX_REMEMBERED_EVENT_IDS);
         this.state.lastSentAt = this.now();
+        this.state.lastFailedAt = 0;
       } else {
+        this.state.lastFailedAt = this.now();
         this.state.events = [...batch, ...this.state.events]
           .sort((a, b) => a.createdAt - b.createdAt)
           .slice(-500);
