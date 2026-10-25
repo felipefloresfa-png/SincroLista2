@@ -288,3 +288,174 @@ const prompt = `Busca en internet el precio actual real (en pesos chilenos - CLP
   }
 }
 
+export interface ReceiptScanItem {
+  id: string;
+  name: string;
+  quantity: number;
+  price: number;
+  category: string;
+  matchedActiveItem?: string | null;
+  selected: boolean;
+}
+
+export interface ReceiptScanResult {
+  storeName: string;
+  date?: string;
+  totalCost: number;
+  summaryText: string;
+  items: ReceiptScanItem[];
+}
+
+/**
+ * Comprime y redimensiona una imagen para optimizar el escaneo con IA (reduce memoria y acelera la subida)
+ */
+export async function compressImageFile(file: File, maxWidth = 1600, quality = 0.82): Promise<{ base64: string; mimeType: string }> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const img = new Image();
+      img.onload = () => {
+        let width = img.width;
+        let height = img.height;
+        if (width > maxWidth) {
+          height = Math.round((height * maxWidth) / width);
+          width = maxWidth;
+        }
+        const canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) {
+          const fallbackData = (e.target?.result as string) || '';
+          const mime = file.type || 'image/jpeg';
+          return resolve({ base64: fallbackData, mimeType: mime });
+        }
+        ctx.drawImage(img, 0, 0, width, height);
+        const mimeType = 'image/jpeg';
+        const dataUrl = canvas.toDataURL(mimeType, quality);
+        resolve({ base64: dataUrl, mimeType });
+      };
+      img.onerror = () => reject(new Error('No se pudo decodificar la imagen.'));
+      img.src = e.target?.result as string;
+    };
+    reader.onerror = () => reject(new Error('Error al leer el archivo de imagen.'));
+    reader.readAsDataURL(file);
+  });
+}
+
+/**
+ * Escanea una boleta de supermercado usando Gemini Vision (primero a través de /api/scan-receipt y con fallback local)
+ */
+export async function scanReceiptWithAI(
+  imageBase64: string,
+  mimeType = 'image/jpeg',
+  activeItems: Array<{ id: string; name: string }> = []
+): Promise<ReceiptScanResult> {
+  const activeNames = activeItems.map(i => i.name);
+  
+  // 1. Intentar a través del endpoint seguro del servidor
+  try {
+    const res = await fetch('/api/scan-receipt', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        imageBase64,
+        mimeType,
+        activeItems: activeNames
+      })
+    });
+
+    if (res.ok) {
+      const json = await res.json();
+      if (json.success && json.data) {
+        const raw = json.data;
+        return {
+          storeName: raw.storeName || 'Supermercado',
+          date: raw.date || '',
+          totalCost: Number(raw.totalCost) || 0,
+          summaryText: raw.summaryText || 'Boleta escaneada correctamente',
+          items: (raw.items || []).map((it: any, idx: number) => ({
+            id: `scanned-${Date.now()}-${idx}`,
+            name: it.name || 'Producto',
+            quantity: Number(it.quantity) || 1,
+            price: Number(it.price) || 0,
+            category: it.category || 'Otros',
+            matchedActiveItem: it.matchedActiveItem || null,
+            selected: true
+          }))
+        };
+      }
+    }
+  } catch (netErr) {
+    console.warn('[Gemini] Falló llamada a /api/scan-receipt, intentando fallback en cliente:', netErr);
+  }
+
+  // 2. Fallback directo con el SDK @google/genai en el cliente
+  const cleanBase64 = imageBase64.replace(/^data:image\/[a-zA-Z0-9+.-]+;base64,/, '');
+  const prompt = `Analiza detenidamente esta boleta o ticket de supermercado.
+Extrae en JSON:
+- storeName: Nombre del supermercado o comercio (ej: "Lider", "Jumbo", "Santa Isabel", "Unimarc", "Tottus", "Carrefour", "Mercadona", "Feria", o "Supermercado").
+- date: Fecha de la compra si es legible o vacía.
+- totalCost: Monto total final pagado en número (sin puntos de miles ni símbolos de moneda).
+- summaryText: Breve resumen de 1 línea.
+- items: Arreglo de productos: name (limpio y desabreviado), quantity (número), price (número), category ("Frutas y Verduras", "Carnes y Pescados", "Lácteos y Huevos", "Despensa", "Panadería", "Congelados", "Bebidas", "Limpieza del Hogar", "Higiene y Cuidado Personal", "Otros"), matchedActiveItem (si coincide con alguno de [${activeNames.join(', ')}]).`;
+
+  const response = await ai.models.generateContent({
+    model: 'gemini-3.8-flash',
+    contents: [
+      {
+        inlineData: {
+          data: cleanBase64,
+          mimeType: mimeType || 'image/jpeg'
+        }
+      },
+      prompt
+    ],
+    config: {
+      responseMimeType: 'application/json',
+      responseSchema: {
+        type: Type.OBJECT,
+        properties: {
+          storeName: { type: Type.STRING },
+          date: { type: Type.STRING },
+          totalCost: { type: Type.NUMBER },
+          summaryText: { type: Type.STRING },
+          items: {
+            type: Type.ARRAY,
+            items: {
+              type: Type.OBJECT,
+              properties: {
+                name: { type: Type.STRING },
+                quantity: { type: Type.NUMBER },
+                price: { type: Type.NUMBER },
+                category: { type: Type.STRING },
+                matchedActiveItem: { type: Type.STRING }
+              },
+              required: ['name', 'price']
+            }
+          }
+        },
+        required: ['storeName', 'totalCost', 'items']
+      }
+    }
+  });
+
+  const parsed = JSON.parse(response.text || '{}');
+  return {
+    storeName: parsed.storeName || 'Supermercado',
+    date: parsed.date || '',
+    totalCost: Number(parsed.totalCost) || 0,
+    summaryText: parsed.summaryText || 'Boleta escaneada',
+    items: (parsed.items || []).map((it: any, idx: number) => ({
+      id: `scanned-${Date.now()}-${idx}`,
+      name: it.name || 'Producto',
+      quantity: Number(it.quantity) || 1,
+      price: Number(it.price) || 0,
+      category: it.category || 'Otros',
+      matchedActiveItem: it.matchedActiveItem || null,
+      selected: true
+    }))
+  };
+}
+
+
