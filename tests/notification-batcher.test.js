@@ -61,14 +61,13 @@ test('envía avances como máximo cada cinco minutos cuando hay actividad contin
   const clock = makeClock();
   const sent = [];
   const batcher = makeBatcher(clock, async (digest) => { sent.push(digest); return true; });
-  for (let i = 0; i < 4; i++) {
+  for (let i = 0; i < 10; i++) {
     batcher.enqueue({ id: String(i), type: 'check', itemName: `Producto ${i}` });
-    await clock.advance(NOTIFICATION_QUIET_WINDOW_MS - 1);
+    await clock.advance(30_000);
   }
-  assert.equal(sent.length, 0);
-  await clock.advance(NOTIFICATION_QUIET_WINDOW_MS);
   assert.equal(sent.length, 1);
-  assert.ok(sent[0].body.includes('4 productos'));
+  assert.ok(sent[0].body.includes('10 productos'));
+  assert.equal(clock.now() - 1_000_000, NOTIFICATION_PROGRESS_INTERVAL_MS);
   batcher.dispose();
 });
 
