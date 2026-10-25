@@ -42,7 +42,7 @@ try {
       icon: '/icon-192.png',
       badge: '/badge-72.png',
       vibrate: [200, 100, 200],
-      tag: 'sincrolista-list-update',
+      tag: payload.data?.tag || 'sincrolista-list-update',
       renotify: false,
       data: payload.data || {},
     };
@@ -69,7 +69,7 @@ self.addEventListener('push', (event) => {
         icon: '/icon-192.png',
         badge: '/badge-72.png',
         vibrate: [200, 100, 200],
-        tag: 'sincrolista-list-update',
+        tag: data.tag || data.data?.tag || 'sincrolista-list-update',
         renotify: false,
         data: data.data || data,
       };
