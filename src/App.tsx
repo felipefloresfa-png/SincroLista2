@@ -114,6 +114,7 @@ import {
 import { motion, AnimatePresence } from 'motion/react';
 import { analyzeItem, getSmartRecommendations, parseVoiceInput, ItemInfo, ParsedVoiceItem, searchMarketPrices, SupermarketPrice, generateAIContent } from './lib/gemini';
 import { getInstantCategory } from './lib/itemCache';
+import { NotificationBatcher } from './lib/notificationBatcher.js';
 import { 
   requestFCMToken, 
   showLocalNotification, 
@@ -608,6 +609,7 @@ function VoiceInputButton({ onItemsFound, onStatusChange }: {
 
 export default function App() {
   const [user, setUser] = useState<FirebaseUser | null>(null);
+  const notificationBatcherRef = useRef<NotificationBatcher | null>(null);
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [familyInviteCode, setFamilyInviteCode] = useState('');
   const authFlowInProgressRef = useRef(false);
@@ -1651,10 +1653,29 @@ export default function App() {
     });
   };
 
+  useEffect(() => {
+    if (!profile?.uid || !profile.familyId) {
+      notificationBatcherRef.current?.dispose();
+      notificationBatcherRef.current = null;
+      return;
+    }
+
+    const batcher = new NotificationBatcher({
+      storageKey: `sincrolista-push-batch:${profile.uid}:${profile.familyId}`,
+      send: async (digest) => (await sendPushNotificationToPartners(digest)).success,
+    });
+    notificationBatcherRef.current = batcher;
+
+    return () => {
+      batcher.dispose();
+      if (notificationBatcherRef.current === batcher) notificationBatcherRef.current = null;
+    };
+  }, [profile?.uid, profile?.familyId]);
+
   const logActivity = async (type: ActivityItem['type'], itemName: string, category?: string) => {
     if (!profile?.familyId) return;
     try {
-      await addDoc(activitiesCollection, { 
+      const activityRef = await addDoc(activitiesCollection, { 
         userId: profile.uid, 
         userName: profile.displayName || 'Tu pareja',
         type, 
@@ -1663,8 +1684,12 @@ export default function App() {
         familyId: profile.familyId, 
         timestamp: serverTimestamp() 
       });
-      // Enviar notificación Push para que le suene y vibre a la pareja en segundo plano / pantalla apagada
-      notifyPartnersViaPush(type, itemName);
+      notificationBatcherRef.current?.enqueue({
+        id: activityRef.id,
+        type,
+        itemName,
+        userName: profile.displayName || 'Tu pareja',
+      });
     } catch (err: any) {
       console.warn("Aviso al registrar actividad:", err?.message || err);
     }

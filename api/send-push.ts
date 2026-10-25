@@ -112,11 +112,20 @@ export default async function handler(req: any, res: any) {
   if (!keys.publicKey || !keys.privateKey) return res.status(503).json({ error: 'Web Push no está configurado.' });
 
   const notification = req.body?.notification;
+  if (
+    typeof notification?.title !== 'string' || !notification.title.trim() ||
+    typeof notification?.body !== 'string' || !notification.body.trim()
+  ) {
+    return res.status(400).json({ error: 'La notificación debe incluir título y mensaje.' });
+  }
+
   const type = ['add', 'check', 'delete', 'clear'].includes(notification?.data?.type) ? notification.data.type : 'update';
   const payload = JSON.stringify({
-    title: typeof notification?.title === 'string' ? notification.title.slice(0, 100) : 'SincroLista 🛒',
-    body: typeof notification?.body === 'string' ? notification.body.slice(0, 200) : 'Actualización en tu lista compartida',
-    tag: typeof notification?.tag === 'string' ? notification.tag.slice(0, 100) : `sincrolista-${Date.now()}`,
+    title: notification.title.trim().slice(0, 100),
+    body: notification.body.trim().slice(0, 200),
+    tag: typeof notification?.tag === 'string' && notification.tag.trim()
+      ? notification.tag.trim().slice(0, 100)
+      : `sincrolista-${Date.now()}`,
     data: {
       url: '/',
       type,
