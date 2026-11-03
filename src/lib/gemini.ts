@@ -15,6 +15,7 @@ export async function generateAIContent(request: Record<string, any>): Promise<{
 }
 
 export interface ItemInfo {
+  correctedName?: string;
   category: string;
   suggestedUnit: string;
   isPerishable: boolean;
@@ -32,6 +33,7 @@ export async function analyzeItem(itemName: string): Promise<ItemInfo> {
       Frutas y Verduras, Carnes y Pescados, Lácteos y Huevos, Despensa, Panadería, Congelados, Bebidas, Alcohol, Higiene y Cuidado Personal, Limpieza del Hogar, Mascotas, Bebés, Otros.
       
       Devuelve info en JSON:
+      - correctedName: Corrige la ortografía, tildes y mayúsculas en español (ej: "atun" -> "Atún", "azucar" -> "Azúcar", "jabon" -> "Jabón", "oregano" -> "Orégano", "cevolla" -> "Cebolla", "lehe" -> "Leche", "platano" -> "Plátanos", "yogurt protein" -> "Yogurt protein"). Conserva marcas o detalles si los tiene.
       - category: Nombre de la categoría exacta de la lista anterior.
       - suggestedUnit: Unidad común (uds, kg, l, pack)
       - isPerishable: true si es perecedero
@@ -41,12 +43,13 @@ export async function analyzeItem(itemName: string): Promise<ItemInfo> {
         responseSchema: {
           type: Type.OBJECT,
           properties: {
+            correctedName: { type: Type.STRING },
             category: { type: Type.STRING },
             suggestedUnit: { type: Type.STRING },
             isPerishable: { type: Type.BOOLEAN },
             priorityLevel: { type: Type.STRING, enum: ["low", "medium", "high"] }
           },
-          required: ["category", "suggestedUnit", "isPerishable", "priorityLevel"]
+          required: ["correctedName", "category", "suggestedUnit", "isPerishable", "priorityLevel"]
         }
       }
     });
@@ -55,6 +58,7 @@ export async function analyzeItem(itemName: string): Promise<ItemInfo> {
   } catch (error) {
     console.error("Error analyzing item:", error);
     return {
+      correctedName: itemName.charAt(0).toUpperCase() + itemName.slice(1),
       category: "Otros",
       suggestedUnit: "uds",
       isPerishable: false,
@@ -400,8 +404,8 @@ Extrae en JSON:
 - summaryText: Breve resumen de 1 línea.
 - items: Arreglo de productos: name (limpio y desabreviado), quantity (número), price (número), category ("Frutas y Verduras", "Carnes y Pescados", "Lácteos y Huevos", "Despensa", "Panadería", "Congelados", "Bebidas", "Limpieza del Hogar", "Higiene y Cuidado Personal", "Otros"), matchedActiveItem (si coincide con alguno de [${activeNames.join(', ')}]).`;
 
-  const response = await ai.models.generateContent({
-    model: 'gemini-3.8-flash',
+  const response = await generateAIContent({
+    model: 'gemini-1.5-flash',
     contents: [
       {
         inlineData: {

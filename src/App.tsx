@@ -109,9 +109,22 @@ import {
   DollarSign,
   Bell,
   BellRing,
-  BellOff
+  BellOff,
+  X
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
+import { 
+  buildSuggestionsIndex, 
+  getQuickSuggestions, 
+  DEFAULT_ESSENTIALS, 
+  type QuickSuggestion 
+} from './lib/quickSuggestions';
+import { 
+  getCanonicalItem, 
+  areItemsEquivalent, 
+  deduplicateItemList, 
+  normalizeItemKey 
+} from './lib/itemNormalizer';
 import { analyzeItem, getSmartRecommendations, parseVoiceInput, ItemInfo, ParsedVoiceItem, searchMarketPrices, SupermarketPrice, generateAIContent } from './lib/gemini';
 import { getInstantCategory } from './lib/itemCache';
 import { NotificationBatcher } from './lib/notificationBatcher.js';
@@ -989,9 +1002,54 @@ export default function App() {
     onConfirm: () => {}
   });
   
-  // Form States
+  // Form States & Atajos Rápidos
   const [newItemName, setNewItemName] = useState('');
   const [newItemQty, setNewItemQty] = useState('1');
+  const [isInputFocused, setIsInputFocused] = useState(false);
+  const [isSuggestionsDismissed, setIsSuggestionsDismissed] = useState(false);
+  const inputBlurTimeoutRef = useRef<any>(null);
+  const isAutoUnifyingRef = useRef(false);
+
+  // Índice reactivo de productos habituales del hogar (historial + actividades + esenciales)
+  const suggestionsIndex = useMemo(() => {
+    return buildSuggestionsIndex({
+      history,
+      activities,
+      essentials: DEFAULT_ESSENTIALS
+    });
+  }, [history, activities]);
+
+  // Atajos rápidos calculados al vuelo en cliente (sin llamadas IA por tecla)
+  const quickSuggestions = useMemo(() => {
+    return getQuickSuggestions({
+      query: newItemName,
+      index: suggestionsIndex,
+      activeItems: items,
+      limit: 10
+    });
+  }, [newItemName, suggestionsIndex, items]);
+
+  const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    setNewItemName(e.target.value);
+    if (isSuggestionsDismissed) {
+      setIsSuggestionsDismissed(false);
+    }
+  };
+
+  const handleInputFocus = () => {
+    if (inputBlurTimeoutRef.current) {
+      clearTimeout(inputBlurTimeoutRef.current);
+      inputBlurTimeoutRef.current = null;
+    }
+    setIsInputFocused(true);
+    setIsSuggestionsDismissed(false);
+  };
+
+  const handleInputBlur = () => {
+    inputBlurTimeoutRef.current = setTimeout(() => {
+      setIsInputFocused(false);
+    }, 250);
+  };
 
   const [statusMessage, setStatusMessage] = useState<string>('');
   const [debugLogs, setDebugLogs] = useState<string[]>([]);
@@ -1383,6 +1441,54 @@ export default function App() {
     }
   }, [activeListId, profile?.familyId]);
 
+  // Unificación ortográfica y de duplicados automática en segundo plano (un "desde" sin botones manuales)
+  useEffect(() => {
+    if (!activeListId || isAutoUnifyingRef.current) return;
+    const activeUnchecked = items.filter(i => !i.checked && i.listId === activeListId);
+    if (activeUnchecked.length < 2) return;
+
+    const groups = new Map<string, GroceryItem[]>();
+    for (const item of activeUnchecked) {
+      const key = normalizeItemKey(item.name);
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key)!.push(item);
+    }
+
+    const duplicateGroups = Array.from(groups.values()).filter(g => g.length > 1);
+    if (duplicateGroups.length === 0) return;
+
+    const autoUnify = async () => {
+      isAutoUnifyingRef.current = true;
+      try {
+        for (const group of duplicateGroups) {
+          const canonical = getCanonicalItem(group[0].name).name || group[0].name;
+          const primary = group.find(i => i.name === canonical) || group[0];
+          const duplicates = group.filter(i => i.id !== primary.id);
+
+          let totalQty = parseInt(primary.quantity, 10) || 1;
+          for (const dup of duplicates) {
+            totalQty += parseInt(dup.quantity, 10) || 1;
+          }
+
+          await updateDoc(doc(db, 'items', primary.id), {
+            name: canonical,
+            quantity: String(totalQty)
+          });
+
+          for (const dup of duplicates) {
+            await deleteDoc(doc(db, 'items', dup.id));
+          }
+        }
+      } catch (err) {
+        console.warn("[AutoUnify] Error al unificar duplicados:", err);
+      } finally {
+        isAutoUnifyingRef.current = false;
+      }
+    };
+
+    autoUnify();
+  }, [items, activeListId]);
+
   // Sincronizar todos los productos de la familia para el conteo de listas en tiempo real
   useEffect(() => {
     if (!profile?.familyId) return;
@@ -1716,8 +1822,9 @@ export default function App() {
       return;
     }
 
-    // Capitalizar la primera letra siempre
-    const capitalizedName = name.trim().charAt(0).toUpperCase() + name.trim().slice(1);
+    // Obtener nombre canónico ortográficamente correcto (ej: "atun" -> "Atún", "azucar" -> "Azúcar", "jabon" -> "Jabón")
+    const canonicalInfo = getCanonicalItem(name);
+    const capitalizedName = canonicalInfo.name || (name.trim().charAt(0).toUpperCase() + name.trim().slice(1));
 
     const proceedWithAdd = async (finalName: string, finalQty: string, finalId: string | null) => {
       if (!finalId) {
@@ -1735,9 +1842,11 @@ export default function App() {
         addLog(`Guardando [${finalName}]...`);
         
         // MEMORIA DE PASILLOS: Buscamos si este producto ya ha sido categorizado antes por el grupo
-        const existingAssignment = items.find(i => i.name.toLowerCase() === finalName.toLowerCase());
-        const historicalAssignment = activities.find(a => a.itemName?.toLowerCase() === finalName.toLowerCase() && a.category);
-        const fastCategory = getInstantCategory(finalName);
+        const existingAssignment = items.find(i => areItemsEquivalent(i.name, finalName));
+        const historicalAssignment = activities.find(a => a.itemName && areItemsEquivalent(a.itemName, finalName) && a.category);
+        const fastCategory = canonicalInfo.category 
+          ? { category: canonicalInfo.category, priorityLevel: canonicalInfo.priorityLevel || 'medium' }
+          : getInstantCategory(finalName);
         
         let analysis: any;
         if (fastCategory) {
@@ -1767,7 +1876,7 @@ export default function App() {
         const tempId = 'temp-item-' + Date.now();
         const visualItem = { id: tempId, ...itemData } as any;
         setItems(prev => {
-          if (prev.some(i => i.name === finalName && i.listId === finalId)) return prev;
+          if (prev.some(i => areItemsEquivalent(i.name, finalName) && i.listId === finalId)) return prev;
           return [visualItem, ...prev];
         });
         
@@ -1775,23 +1884,31 @@ export default function App() {
         const docRef = await addDoc(itemsCollection, itemData);
         if (!silent) addNotification(`${finalName} añadido`, 'success');
         
-        // ANALIZAR EN SEGUNDO PLANO SI NO HABÍA CACHÉ
-        if (!analysis || analysis.category === 'Otros') {
-          (async () => {
-            try {
-              const result = await analyzeItem(finalName);
-              if (result && result.category && result.category !== 'Otros') {
-                await updateDoc(doc(db, 'items', docRef.id), { 
-                   category: result.category,
-                   priority: (result.priorityLevel === 'high' ? 'high' : 'medium')
-                });
-                console.log(`IA fondo: ${finalName} -> ${result.category}`);
-              }
-            } catch (bgError) {
-              console.error("Error en análisis de fondo:", bgError);
+        // ANALIZAR Y CORREGIR ORTOGRAFÍA EN SEGUNDO PLANO CON IA
+        (async () => {
+          try {
+            const result = await analyzeItem(finalName);
+            const updates: Record<string, any> = {};
+
+            if (result && result.category && result.category !== 'Otros' && (!analysis || analysis.category === 'Otros')) {
+              updates.category = result.category;
+              updates.priority = (result.priorityLevel === 'high' ? 'high' : 'medium');
             }
-          })();
-        }
+
+            // Si la IA corrigió tildes u ortografía (ej: "cevolla" -> "Cebolla", "lehe" -> "Leche")
+            if (result && result.correctedName && result.correctedName.trim() && result.correctedName !== finalName) {
+              updates.name = result.correctedName.trim();
+            }
+
+            if (Object.keys(updates).length > 0) {
+              await updateDoc(doc(db, 'items', docRef.id), updates);
+              setItems(prev => prev.map(i => (i.id === docRef.id || i.id === tempId) ? { ...i, ...updates } : i));
+              console.log(`IA fondo: ${finalName} actualizado ->`, updates);
+            }
+          } catch (bgError) {
+            console.error("Error en análisis de fondo:", bgError);
+          }
+        })();
 
         addLog(`Nube OK: ${docRef.id.substring(0,5)}`);
         await logActivity('add', finalName, itemData.category);
@@ -1807,21 +1924,21 @@ export default function App() {
       }
     };
 
-    // SISTEMA DE ALERTA DE DUPLICADOS (Usando diálogo personalizado)
-    const isDuplicate = items.some(i => 
-      i.name.toLowerCase() === capitalizedName.toLowerCase() && 
+    // SISTEMA DE ALERTA DE DUPLICADOS INTELIGENTE (Equivalencia ortográfica, tildes y plurales)
+    const existingDuplicate = items.find(i => 
       i.listId === listToUse &&
-      !i.checked 
+      !i.checked &&
+      areItemsEquivalent(i.name, capitalizedName)
     );
 
-    if (isDuplicate) {
-      if (silent) return; // Skip duplicates silently during batch operations (like repeating purchase)
+    if (existingDuplicate) {
+      if (silent) return; // Omitir duplicados silenciosamente en dictado o compras repetidas
       
       setPromptConfig({
         isOpen: true,
         type: 'confirm',
         title: "Producto Duplicado",
-        description: `"${capitalizedName}" ya está en tu lista actual sin marcar. ¿Seguro que quieres agregarlo de todas formas?`,
+        description: `"${capitalizedName}" ya está en tu lista actual como "${existingDuplicate.name}" sin marcar. ¿Seguro que quieres agregarlo de todas formas?`,
         initialValue: '',
         onConfirm: () => {
           setPromptConfig(prev => ({ ...prev, isOpen: false }));
@@ -1832,6 +1949,35 @@ export default function App() {
     }
 
     proceedWithAdd(capitalizedName, qty, listToUse);
+  };
+
+  const handleQuickAdd = async (suggestion: QuickSuggestion) => {
+    if (isAdding) return;
+    const isAlreadyInActiveList = items.some(i => 
+      !i.checked && 
+      i.listId === activeListId && 
+      areItemsEquivalent(i.name, suggestion.name)
+    );
+    if (isAlreadyInActiveList || suggestion.alreadyInList) {
+      addNotification(`"${suggestion.name}" ya está en tu lista actual`, 'info');
+      return;
+    }
+
+    const qtyToUse = newItemQty !== '1' ? newItemQty : (suggestion.habitualQuantity || '1');
+
+    if (typeof navigator !== 'undefined' && 'vibrate' in navigator) {
+      try { navigator.vibrate(25); } catch (_) {}
+    }
+
+    setIsAdding(true);
+    try {
+      await addItem(suggestion.name, qtyToUse, undefined, false);
+      setNewItemName('');
+    } catch (err) {
+      console.error("Error al agregar producto sugerido:", err);
+    } finally {
+      setIsAdding(false);
+    }
   };
 
   const toggleItem = async (item: GroceryItem) => {
@@ -1948,24 +2094,16 @@ export default function App() {
       const historyDocRef = await addDoc(historyCollection, historyEntry);
       addLog(`Historial guardado exitosamente con ID: ${historyDocRef.id}`);
 
-      // 3. Eliminar items completados de la lista activa en paralelo (allSettled)
+      // 3. Eliminar items completados de la lista activa en paralelo
       const deletePromises = checkedItems.map(item => 
         deleteDoc(doc(db, 'items', item.id))
           .catch(err => {
             addLog(`Aviso: Error al eliminar artículo transitorio ${item.name} (${item.id}): ${err.message}`);
           })
       );
-      
-      // 4. Marcar items pendientes como is_carryover en paralelo (allSettled)
-      const updatePromises = pendingItems.map(item => 
-        updateDoc(doc(db, 'items', item.id), { is_carryover: true })
-          .catch(err => {
-            addLog(`Aviso: Error al marcar artículo pendiente ${item.name} (${item.id}): ${err.message}`);
-          })
-      );
 
-      // Esperar a que se realicen las eliminaciones y actualizaciones
-      await Promise.all([...deletePromises, ...updatePromises]);
+      // Esperar a que se realicen las eliminaciones de items completados
+      await Promise.all(deletePromises);
       
       await logActivity('clear', `Compra finalizada: ${checkedItems.length} items archivados`);
       addNotification(`¡Compra finalizada! ${checkedItems.length} productos archivados.`, 'success');
@@ -2634,12 +2772,13 @@ export default function App() {
               profile={profile}
               currentItems={items}
               onAddItem={(name) => addItem(name)}
-              onRepeatPurchase={async (items) => {
-                for (const item of items) {
+              onRepeatPurchase={async (purchaseItems) => {
+                const deduped = deduplicateItemList(purchaseItems);
+                for (const item of deduped) {
                   await addItem(item.name, item.quantity);
                 }
                 setCurrentView('list');
-                addNotification("¡Todo agregado a la lista!", 'success');
+                addNotification("¡Todo agregado a la lista sin duplicados!", 'success');
               }}
               history={history}
               loading={historyLoading}
@@ -3062,6 +3201,82 @@ export default function App() {
           {!shoppingMode && (
             <div className="fixed bottom-0 left-0 lg:left-[280px] right-0 p-3 lg:p-6 z-40 flex justify-center pointer-events-none pb-[env(safe-area-inset-bottom,12px)]">
               <div className="w-full max-w-xl pointer-events-auto">
+                {/* Atajos Rápidos / Sugerencias Frecuentes estilo Grocery Genius */}
+                <AnimatePresence>
+                  {(isInputFocused || newItemName.trim().length > 0) && !isSuggestionsDismissed && quickSuggestions.length > 0 && (
+                    <motion.div
+                      initial={{ opacity: 0, y: 10, scale: 0.98 }}
+                      animate={{ opacity: 1, y: 0, scale: 1 }}
+                      exit={{ opacity: 0, y: 6, scale: 0.98 }}
+                      transition={{ duration: 0.16, ease: "easeOut" }}
+                      onMouseDown={(e) => e.preventDefault()}
+                      className="mb-2 bg-white/95 backdrop-blur-2xl border border-border shadow-[0_20px_45px_-12px_rgba(0,0,0,0.2)] rounded-2xl p-2 sm:p-2.5 ring-1 ring-black/5"
+                    >
+                      <div className="flex items-center justify-between px-1.5 pb-1.5 text-text-secondary border-b border-border/50 mb-1.5">
+                        <div className="flex items-center gap-1.5">
+                          <Zap className="w-3.5 h-3.5 text-accent fill-accent" />
+                          <span className="text-[10px] font-black uppercase tracking-wider text-text-main">
+                            {newItemName.trim() ? 'Sugerencias para agregar' : 'Atajos Rápidos • Frecuentes'}
+                          </span>
+                          <span className="text-[9px] font-bold text-gray-500 bg-gray-100 px-1.5 py-0.2 rounded-md">
+                            {quickSuggestions.length}
+                          </span>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => setIsSuggestionsDismissed(true)}
+                          className="p-1 -mr-1 text-gray-400 hover:text-gray-600 rounded-lg hover:bg-gray-100 transition-colors"
+                          title="Cerrar sugerencias"
+                        >
+                          <X className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+
+                      <div className="flex items-center gap-1.5 overflow-x-auto py-0.5 px-0.5 scrollbar-none scroll-smooth">
+                        {quickSuggestions.map((sug) => {
+                          const inList = sug.alreadyInList;
+                          return (
+                            <button
+                              key={sug.name}
+                              type="button"
+                              disabled={inList || isAdding}
+                              onClick={() => handleQuickAdd(sug)}
+                              className={cn(
+                                "group shrink-0 flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl text-xs font-semibold border transition-all active:scale-95",
+                                inList
+                                  ? "bg-gray-50/80 border-gray-200 text-gray-400 cursor-not-allowed opacity-60"
+                                  : "bg-white hover:bg-accent/5 border-border hover:border-accent/40 text-text-main shadow-xs hover:shadow-sm"
+                              )}
+                            >
+                              <span className="text-xs leading-none shrink-0">{sug.icon || '🛒'}</span>
+                              <span className="whitespace-nowrap font-bold text-xs">{sug.name}</span>
+                              
+                              {/* Badge de cantidad habitual */}
+                              {sug.habitualQuantity && sug.habitualQuantity !== '1' && (
+                                <span className="bg-amber-100 text-amber-800 text-[9px] font-black px-1.5 py-0.5 rounded-md leading-none">
+                                  x{sug.habitualQuantity}
+                                </span>
+                              )}
+
+                              {/* Indicador de acción */}
+                              {inList ? (
+                                <span className="text-[9px] font-medium text-gray-400 flex items-center gap-0.5 bg-gray-100 px-1 py-0.5 rounded">
+                                  <Check className="w-2.5 h-2.5 text-emerald-500" strokeWidth={3} />
+                                  En lista
+                                </span>
+                              ) : (
+                                <span className="w-4 h-4 rounded-full bg-accent/10 group-hover:bg-accent text-accent group-hover:text-white flex items-center justify-center transition-colors">
+                                  <Plus className="w-2.5 h-2.5" strokeWidth={3} />
+                                </span>
+                              )}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+
                  <form 
                     onSubmit={(e) => { 
                       e.preventDefault(); 
@@ -3081,7 +3296,9 @@ export default function App() {
                       </div>
                       <input 
                         value={newItemName}
-                        onChange={e => setNewItemName(e.target.value)}
+                        onChange={handleInputChange}
+                        onFocus={handleInputFocus}
+                        onBlur={handleInputBlur}
                         placeholder="¿Qué Falta?"
                         className="flex-grow min-w-0 bg-transparent border-none outline-none px-1.5 text-base sm:text-sm font-bold text-text-main placeholder:text-gray-400 placeholder:font-medium"
                         disabled={isAdding}
@@ -3754,24 +3971,21 @@ function ItemRow({ item, onToggle, onDelete, onEdit, onUpdateQty, onUpdatePrice,
         {item.checked && <Check className="w-3.5 h-3.5" strokeWidth={3} />}
       </button>
       
-      <div className="flex-grow min-w-0">
+      <div className="flex-1 min-w-0">
         <div className="flex items-center gap-1.5 w-full">
           <button 
             onClick={shoppingMode ? undefined : onEdit}
             disabled={shoppingMode}
             className={cn(
-              "text-sm font-bold leading-tight transition-all text-left flex-grow min-w-0 block pb-0.5",
+              "text-sm font-bold leading-tight transition-all text-left flex-1 min-w-0 block pb-0.5",
               item.checked && !shoppingMode && "line-through decoration-2",
               shoppingMode ? (item.checked ? "text-gray-600 line-through" : "text-gray-100") : "text-text-main hover:text-accent"
             )}
           >
-            <span className="break-words line-clamp-2 whitespace-normal block leading-tight">
+            <span className="block truncate sm:line-clamp-2 leading-tight">
               {item.name}
             </span>
           </button>
-          {item.is_carryover && !item.checked && (
-            <span className="text-[7px] font-black uppercase tracking-tighter bg-accent/10 text-accent px-1 py-0.5 rounded-sm shrink-0">Anterior</span>
-          )}
           {item.priority === 'high' && !item.checked ? (
             <button 
               onClick={onTogglePriority}
@@ -3788,7 +4002,7 @@ function ItemRow({ item, onToggle, onDelete, onEdit, onUpdateQty, onUpdatePrice,
             </button>
           )}
         </div>
-        {item.notes && <p className="text-[9px] text-text-secondary mt-0.5">{item.notes}</p>}
+        {item.notes && <p className="text-[9px] text-text-secondary mt-0.5 truncate">{item.notes}</p>}
       </div>
 
       <div className="flex items-center gap-1 shrink-0">
@@ -4910,7 +5124,7 @@ function PurchaseHistoryView({ onOpenMenu, profile, onAddItem, onRepeatPurchase,
 }) {
   // Helper to check if an item is already in the current list
   const isItemInList = (name: string) => {
-    return currentItems.some(i => i.name.toLowerCase() === name.toLowerCase() && !i.checked);
+    return currentItems.some(i => areItemsEquivalent(i.name, name) && !i.checked);
   };
 
   return (
@@ -5038,7 +5252,7 @@ function PurchaseHistoryView({ onOpenMenu, profile, onAddItem, onRepeatPurchase,
                   </div>
 
                   <div className="flex flex-wrap gap-2">
-                    {entry.items?.map((item: any, idx: number) => {
+                    {deduplicateItemList(entry.items || []).map((item: any, idx: number) => {
                       const alreadyInList = isItemInList(item.name);
                       
                       return (
