@@ -644,3 +644,86 @@ export function buildRestockSuggestions({
 
   return results;
 }
+
+/**
+ * Unifica en una sola barra deduplicada las reposiciones urgentes de la despensa
+ * y las recomendaciones habituales/IA, evitando duplicar productos o mostrar dos bloques.
+ */
+export function buildUnifiedChecklistSuggestions({
+  catalogItems = [],
+  aiRecommendations = [],
+  activeItems = [],
+  max = 8,
+} = {}) {
+  const results = [];
+  const seenKeys = new Set();
+
+  for (const active of activeItems || []) {
+    if (!active || active.checked || !active.name) continue;
+    const fam = resolvePantryFamily(active.name);
+    if (fam.familyKey) seenKeys.add(fam.familyKey);
+    const rawKey = normalizeItemKey(active.name);
+    if (rawKey) seenKeys.add(rawKey);
+  }
+
+  const pantryAlerts = buildChecklistPantryAlerts({ catalogItems, max: 5 });
+  for (const alert of pantryAlerts) {
+    if (seenKeys.has(alert.key)) continue;
+    seenKeys.add(alert.key);
+
+    const targetName = alert.preferredVariant || alert.name;
+    let hintText = null;
+    if (alert.daysRemaining !== null) {
+      if (alert.daysRemaining <= 0) {
+        const overdue = Math.abs(alert.daysRemaining);
+        if (overdue > 30) {
+          hintText = 'por reponer';
+        } else if (overdue === 0) {
+          hintText = 'toca hoy';
+        } else {
+          hintText = `pasado ${overdue} d`;
+        }
+      } else {
+        hintText = `quedan ${alert.daysRemaining} d`;
+      }
+    }
+
+    results.push({
+      key: `pantry-${alert.key}`,
+      familyKey: alert.key,
+      label: targetName,
+      targetName,
+      quantity: alert.habitualQuantity > 1 ? alert.habitualQuantity : 1,
+      hintText,
+      source: 'pantry',
+    });
+
+    if (results.length >= max) return results;
+  }
+
+  for (const rec of aiRecommendations || []) {
+    if (!rec || typeof rec !== 'string') continue;
+    const trimmed = rec.trim();
+    if (!trimmed) continue;
+    const fam = resolvePantryFamily(trimmed);
+    const key = fam.familyKey || normalizeItemKey(trimmed);
+    if (!key || seenKeys.has(key)) continue;
+    seenKeys.add(key);
+
+    const display = fam.variantName || trimmed;
+    results.push({
+      key: `ai-${key}`,
+      familyKey: key,
+      label: display,
+      targetName: display,
+      quantity: 1,
+      hintText: null,
+      source: 'ai',
+      rawRec: rec,
+    });
+
+    if (results.length >= max) break;
+  }
+
+  return results;
+}

@@ -83,3 +83,21 @@ export declare function buildRestockSuggestions(params?: {
   activeItems?: any[];
   max?: number;
 }): RestockSuggestionItem[];
+
+export interface UnifiedChecklistSuggestion {
+  key: string;
+  familyKey: string;
+  label: string;
+  targetName: string;
+  quantity: number;
+  hintText: string | null;
+  source: 'pantry' | 'ai';
+  rawRec?: string;
+}
+
+export declare function buildUnifiedChecklistSuggestions(params?: {
+  catalogItems?: PantryCatalogItem[];
+  aiRecommendations?: string[];
+  activeItems?: any[];
+  max?: number;
+}): UnifiedChecklistSuggestion[];

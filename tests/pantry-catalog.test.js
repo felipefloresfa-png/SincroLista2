@@ -223,3 +223,41 @@ test('marks repeated purchases inactive for >90 days and >45 days overdue as sta
   assert.equal(item.stockStatus, 'stale');
   assert.equal(item.needsRestock, false);
 });
+
+test('buildUnifiedChecklistSuggestions merges pantry alerts and AI recs without duplicates or stale overdue wording', async () => {
+  const { buildUnifiedChecklistSuggestions } = await import('../src/lib/pantryCatalog.js');
+  const now = new Date('2026-11-23T12:00:00Z').getTime();
+
+  // Hacer que Azúcar sea depleted hace >30d con 3 compras para probar el texto limpio 'por reponer'
+  const catalogWithOverdueSugar = buildPantryCatalog({
+    history: [
+      { timestamp: now - 120 * DAY_MS, items: [{ name: 'Azúcar', quantity: '1' }] },
+      { timestamp: now - 98 * DAY_MS, items: [{ name: 'Azúcar', quantity: '1' }] },
+      { timestamp: now - 76 * DAY_MS, items: [{ name: 'Azúcar', quantity: '1' }] },
+      { timestamp: now - 16 * DAY_MS, items: [{ name: 'Café', quantity: '1' }] },
+      { timestamp: now - 8 * DAY_MS, items: [{ name: 'Café', quantity: '1' }] },
+    ],
+    activeItems: [{ id: 'a1', name: 'Leche entera', quantity: '1', checked: false }],
+    now,
+  });
+
+  const unified = buildUnifiedChecklistSuggestions({
+    catalogItems: catalogWithOverdueSugar,
+    aiRecommendations: ['Azúcar', 'Leche', 'Huevos', 'Pan'],
+    activeItems: [{ id: 'a1', name: 'Leche entera', quantity: '1', checked: false }],
+    max: 6,
+  });
+
+  // Azúcar aparece solo una vez (desde despensa, no repetido desde IA)
+  const sugarMatches = unified.filter((s) => s.familyKey === 'azucar');
+  assert.equal(sugarMatches.length, 1);
+  assert.equal(sugarMatches[0].source, 'pantry');
+  // No debe decir "pasado 54 d" cuando supera 30 días, sino "por reponer"
+  assert.equal(sugarMatches[0].hintText, 'por reponer');
+
+  // Leche no aparece porque ya hay 'Leche entera' en activeItems
+  assert.equal(unified.some((s) => s.familyKey === 'leche'), false);
+  // Huevos y Pan sí se agregan desde IA
+  assert.ok(unified.some((s) => s.familyKey === 'huevos' && s.source === 'ai'));
+  assert.ok(unified.some((s) => s.familyKey === 'pan' && s.source === 'ai'));
+});

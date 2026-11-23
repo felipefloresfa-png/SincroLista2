@@ -130,7 +130,7 @@ import { PantryScannerModal } from './components/PantryScannerModal';
 import { PantryView } from './components/PantryView';
 import {
   buildPantryCatalog,
-  buildChecklistPantryAlerts,
+  buildUnifiedChecklistSuggestions,
   findPantryConsumptionHint,
   type PantryConsumptionHint,
 } from './lib/pantryCatalog';
@@ -779,7 +779,6 @@ export default function App() {
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isPantryScannerOpen, setIsPantryScannerOpen] = useState(false);
-  const [isPantryAlertsDismissed, setIsPantryAlertsDismissed] = useState(false);
   const [pushStatus, setPushStatus] = useState<NotificationPermissionStatus>('default');
   const [isPushModalOpen, setIsPushModalOpen] = useState(false);
   const [isPushSubscribing, setIsPushSubscribing] = useState(false);
@@ -1048,12 +1047,19 @@ export default function App() {
     });
   }, [history, activities, items]);
 
-  const checklistPantryAlerts = useMemo(() => {
-    return buildChecklistPantryAlerts({
+  const unifiedChecklistSuggestions = useMemo(() => {
+    return buildUnifiedChecklistSuggestions({
       catalogItems: pantryCatalog,
-      max: 5,
+      aiRecommendations: recommendations,
+      activeItems: items,
+      max: 8,
     });
-  }, [pantryCatalog]);
+  }, [pantryCatalog, recommendations, items]);
+
+  const hasPantrySuggestions = useMemo(
+    () => unifiedChecklistSuggestions.some((s) => s.source === 'pantry'),
+    [unifiedChecklistSuggestions]
+  );
 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     setNewItemName(e.target.value);
@@ -3090,155 +3096,85 @@ export default function App() {
             </motion.div>
           )}
 
-          {/* Suggestions Bar */}
-          <div className="space-y-4">
-            {!shoppingMode && (
-            <motion.div 
-               animate={{ height: searchQuery ? 0 : 'auto', opacity: searchQuery ? 0 : 1, marginBottom: searchQuery ? 0 : 16 }}
-               className="overflow-hidden"
-            >
-              <div className="space-y-2">
-
+          {/* Barra única unificada: reposición de despensa + sugerencias habituales */}
+          {!shoppingMode && !searchQuery && (unifiedChecklistSuggestions.length > 0 || isFetchingRecs) && (
+            <div className="mb-4 space-y-2">
               <div className="flex items-center justify-between text-text-secondary">
                 <div className="flex items-center gap-2">
-                  <MessageSquare className="w-3 h-3 text-accent" />
-                  <p className="text-[10px] font-black uppercase tracking-widest leading-none">
-                    {activities.length < 5 
-                      ? "Sugerencias:" 
-                      : "Suele comprar:"}
+                  {hasPantrySuggestions ? (
+                    <ShoppingBasket className="w-3.5 h-3.5 text-accent" />
+                  ) : (
+                    <MessageSquare className="w-3 h-3 text-accent" />
+                  )}
+                  <p className="text-[11px] font-semibold tracking-tight text-text-secondary">
+                    {hasPantrySuggestions
+                      ? 'Para reponer'
+                      : activities.length < 5
+                        ? 'Sugerencias'
+                        : 'Suele comprar'}
                   </p>
                 </div>
-                {recommendations.length === 0 && !isFetchingRecs && (
-                  <button 
-                    onClick={() => fetchRecommendations()}
-                    className="text-[9px] font-bold text-accent hover:underline flex items-center gap-1"
+
+                {hasPantrySuggestions ? (
+                  <button
+                    type="button"
+                    onClick={() => setCurrentView('pantry')}
+                    className="text-xs font-semibold text-accent hover:text-accent-dark whitespace-nowrap cursor-pointer"
                   >
-                    <RefreshCw className={cn("w-2.5 h-2.5", isFetchingRecs && "animate-spin")} /> Reintentar
+                    Ver despensa
                   </button>
+                ) : (
+                  unifiedChecklistSuggestions.length === 0 &&
+                  !isFetchingRecs && (
+                    <button
+                      type="button"
+                      onClick={() => fetchRecommendations()}
+                      className="text-xs font-semibold text-accent hover:underline flex items-center gap-1 cursor-pointer"
+                    >
+                      <RefreshCw className={cn('w-3 h-3', isFetchingRecs && 'animate-spin')} />
+                      Reintentar
+                    </button>
+                  )
                 )}
               </div>
-              
-              {recommendations.length > 0 ? (
-                <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} className="flex overflow-x-auto gap-1.5 pb-1 scrollbar-none">
-                  <AnimatePresence mode="popLayout">
-                    {recommendations.slice(0, 8).map(rec => (
-                      <motion.button 
-                        key={rec}
-                        layout
-                        initial={{ opacity: 0, scale: 0.8 }}
-                        animate={{ opacity: 1, scale: 1 }}
-                        exit={{ opacity: 0, scale: 0.8 }}
+
+              {unifiedChecklistSuggestions.length > 0 ? (
+                <div className="flex overflow-x-auto gap-1.5 pb-1 no-scrollbar">
+                  {unifiedChecklistSuggestions.map((s) => {
+                    const qtyTag = s.quantity > 1 ? ` x${s.quantity}` : '';
+                    return (
+                      <button
+                        key={s.key}
+                        type="button"
                         onClick={() => {
-                          addItem(rec);
-                          setRecommendations(prev => prev.filter(r => r !== rec));
+                          handlePantryStep(s.targetName, 1, s.quantity);
+                          if (s.rawRec) {
+                            setRecommendations((prev) => prev.filter((r) => r !== s.rawRec));
+                          }
                         }}
-                        className="shrink-0 bg-white border border-border px-3 py-1.5 rounded-lg text-[10px] font-bold text-text-main hover:border-accent hover:text-accent hover:bg-accent/5 transition-all flex items-center gap-1.5 shadow-xs active:scale-95"
+                        className="shrink-0 min-h-[38px] bg-white border border-border px-3 py-1.5 rounded-xl text-xs font-semibold text-text-main hover:border-accent hover:text-accent hover:bg-accent/5 transition-colors inline-flex items-center gap-1.5 active:scale-95 cursor-pointer tabular-nums"
                       >
-                        <Plus className="w-3 h-3" /> {rec}
-                      </motion.button>
-                    ))}
-                  </AnimatePresence>
-                </motion.div>
+                        <Plus className="w-3.5 h-3.5 text-accent shrink-0" />
+                        <span className="whitespace-nowrap">
+                          {s.label}
+                          {qtyTag}
+                        </span>
+                        {s.hintText && (
+                          <span className="text-[11px] font-normal text-text-secondary whitespace-nowrap">
+                            · {s.hintText}
+                          </span>
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
               ) : (
                 isFetchingRecs && (
-                  <div className="flex items-center gap-2 py-2">
-                    <div className="w-2 h-2 rounded-full bg-accent animate-ping" />
-                    <span className="text-[10px] text-gray-400 font-medium italic">Consultando a la IA...</span>
-                  </div>
+                  <p className="text-xs text-text-secondary py-1">Buscando sugerencias...</p>
                 )
               )}
             </div>
-          </motion.div>
           )}
-        </div>
-
-        {/* Conexión directa Despensa -> Checklist: productos cuya duración estimada está por agotarse */}
-        {!shoppingMode && !searchQuery && !isPantryAlertsDismissed && checklistPantryAlerts.length > 0 && (
-          <div className="mb-5 bg-white border border-border rounded-2xl p-4 space-y-3">
-            <div className="flex items-center justify-between gap-2">
-              <div className="flex items-center gap-2 min-w-0">
-                <ShoppingBasket className="w-4 h-4 text-accent shrink-0" />
-                <span className="text-xs font-bold text-text-main truncate">
-                  Según tu despensa, podrían faltarte hoy
-                </span>
-              </div>
-              <div className="flex items-center gap-2 shrink-0">
-                <button
-                  type="button"
-                  onClick={() => setCurrentView('pantry')}
-                  className="text-xs font-semibold text-accent hover:text-accent-dark whitespace-nowrap cursor-pointer"
-                >
-                  Ver despensa
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setIsPantryAlertsDismissed(true)}
-                  aria-label="Ocultar sugerencias de despensa"
-                  className="p-1 text-text-secondary hover:text-text-main rounded-lg cursor-pointer"
-                >
-                  <X className="w-3.5 h-3.5" />
-                </button>
-              </div>
-            </div>
-
-            <div className="flex items-center gap-2 overflow-x-auto no-scrollbar pb-0.5">
-              {checklistPantryAlerts.map((alert) => {
-                const qtyTag = alert.habitualQuantity > 1 ? ` x${alert.habitualQuantity}` : '';
-                const timingTag =
-                  alert.daysRemaining !== null
-                    ? alert.daysRemaining <= 0
-                      ? alert.daysRemaining < 0
-                        ? `pasado ${Math.abs(alert.daysRemaining)} d`
-                        : 'toca hoy'
-                      : `quedan ${alert.daysRemaining} d`
-                    : 'frecuente';
-
-                const targetName = alert.preferredVariant || alert.name;
-                return (
-                  <button
-                    key={alert.key}
-                    type="button"
-                    onClick={() => handlePantryStep(targetName, 1, alert.habitualQuantity)}
-                    className="shrink-0 min-h-[38px] px-3 py-1.5 bg-gray-50 hover:bg-accent hover:text-white border border-border hover:border-accent rounded-xl text-xs transition-colors flex items-center gap-2 cursor-pointer group tabular-nums"
-                  >
-                    <Plus className="w-3.5 h-3.5 text-accent group-hover:text-white shrink-0" />
-                    <span className="font-semibold text-text-main group-hover:text-white whitespace-nowrap">
-                      {targetName}{qtyTag}
-                    </span>
-                    <span className="text-[11px] text-text-secondary group-hover:text-white/85 whitespace-nowrap">
-                      · {timingTag}
-                    </span>
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-        )}
-
-        {items.length > 0 && !shoppingMode && (
-          <motion.div 
-            initial={{ opacity: 0, scale: 0.98 }}
-            animate={{ opacity: 1, scale: 1 }}
-            className="mb-6 bg-gradient-to-r from-accent/5 via-accent/10 to-transparent border border-accent/20 p-5 rounded-3xl flex flex-col sm:flex-row items-center justify-between gap-4 shadow-sm"
-          >
-            <div className="flex items-center gap-4 text-center sm:text-left">
-              <div className="w-12 h-12 bg-accent text-white rounded-2xl flex items-center justify-center shrink-0 shadow-lg shadow-accent/20">
-                <Search className="w-5 h-5 text-white animate-pulse" />
-              </div>
-              <div>
-                <h3 className="text-sm font-black text-text-main">¿Cuánto cuesta tu lista en los supermercados?</h3>
-                <p className="text-xs text-text-secondary font-medium">Compara precios reales de Lider, Jumbo y Unimarc con IA.</p>
-              </div>
-            </div>
-            <button 
-              onClick={() => setCurrentView('compare-prices')}
-              className="w-full sm:w-auto shrink-0 px-6 py-3 bg-accent text-white rounded-2xl font-black uppercase text-[10px] tracking-widest hover:scale-105 active:scale-95 transition-all shadow-md shadow-accent/20 flex items-center justify-center gap-2"
-            >
-              Comparar Precios
-              <ChevronRight className="w-4 h-4" />
-            </button>
-          </motion.div>
-        )}
 
         {/* Grid of items with better containment */}
           <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-2 2xl:grid-cols-3 gap-3 auto-rows-min">
@@ -3333,6 +3269,32 @@ export default function App() {
               )})}
             </AnimatePresence>
           </div>
+
+          {items.length > 0 && !shoppingMode && (
+            <div className="mt-6 bg-white border border-border rounded-2xl px-4 py-3 flex items-center justify-between gap-3">
+              <div className="flex items-center gap-3 min-w-0">
+                <div className="w-9 h-9 bg-accent/10 text-accent rounded-xl flex items-center justify-center shrink-0">
+                  <Search className="w-4 h-4" />
+                </div>
+                <div className="min-w-0">
+                  <p className="text-sm font-semibold text-text-main truncate">
+                    ¿Cuánto cuesta esta lista?
+                  </p>
+                  <p className="text-xs text-text-secondary truncate">
+                    Compara precios entre Lider, Jumbo y Unimarc
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setCurrentView('compare-prices')}
+                className="min-h-[40px] px-4 py-2 bg-gray-100 hover:bg-accent hover:text-white text-text-main text-xs font-semibold rounded-xl inline-flex items-center gap-1.5 shrink-0 whitespace-nowrap transition-colors cursor-pointer"
+              >
+                <span>Comparar precios</span>
+                <ChevronRight className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          )}
 
           {items.length === 0 && (
               <div className="py-24 text-center space-y-4">
