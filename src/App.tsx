@@ -247,7 +247,7 @@ const processReceipt = async (imageFile: File) => {
     const prompt = "Analiza la boleta chilena adjunta. Extrae el MONTO TOTAL, la FECHA, el NOMBRE DEL COMERCIO y la LISTA DE PRODUCTOS detallada. Para cada producto extrae el nombre, la cantidad y el precio unitario. Responde estrictamente en JSON: {'total': number, 'comercio': 'string', 'fecha': 'ISOString', 'items': [{'nombre': 'string', 'cantidad': number, 'precio': number}], 'error': null}. Si no es una boleta, responde {'error': 'invalido'}.";
 
     const response = await generateAIContent({
-      model: "gemini-4-hydrogen",
+      model: "gemini-3-flash-preview",
       contents: { parts: [{ text: prompt }, imagePart] },
       config: {
         responseMimeType: "application/json",

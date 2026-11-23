@@ -61,8 +61,21 @@ app.post('/api/gemini', async (req, res) => {
     const result = await ai.models.generateContent({ model, contents, config });
     return res.json({ text: result.text || '' });
   } catch (err: any) {
-    console.error('[Gemini] Error al procesar solicitud:', err?.message || err);
-    return res.status(502).json({ error: 'El servicio de IA no pudo completar la solicitud.' });
+    const status = Number(err?.status || err?.code) || 502;
+    const rawMsg = typeof err?.message === 'string' ? err.message : '';
+    console.error('[Gemini] Error al procesar solicitud:', status, rawMsg);
+    if (status === 429) {
+      return res.status(429).json({ error: 'Límite temporal de IA alcanzado (429). Intenta en unos segundos.' });
+    }
+    if (status === 401 || status === 403) {
+      return res.status(502).json({ error: 'La clave de IA del servidor no tiene permisos o no es válida.' });
+    }
+    const cleanReason = rawMsg.replace(/AIza[0-9A-Za-z_-]+/g, '[redacted]').slice(0, 140);
+    return res.status(502).json({
+      error: cleanReason
+        ? `El servicio de IA devolvió un error (${status}): ${cleanReason}`
+        : 'El servicio de IA no pudo completar la solicitud.',
+    });
   }
 });
 
