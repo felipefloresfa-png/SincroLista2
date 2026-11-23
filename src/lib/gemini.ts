@@ -412,7 +412,7 @@ Extrae en JSON:
 - items: Arreglo de productos: name (limpio y desabreviado), quantity (número), price (número), category ("Frutas y Verduras", "Carnes y Pescados", "Lácteos y Huevos", "Despensa", "Panadería", "Congelados", "Bebidas", "Limpieza del Hogar", "Higiene y Cuidado Personal", "Otros"), matchedActiveItem (si coincide con alguno de [${activeNames.join(', ')}]).`;
 
   const response = await generateAIContent({
-    model: 'gemini-1.5-flash',
+    model: 'gemini-4-hydrogen',
     contents: [
       {
         inlineData: {
