@@ -118,7 +118,7 @@ export function PantryScannerModal({
     try {
       const compressed = await Promise.all(
         filesToProcess.map(async (file, idx) => {
-          const { base64, mimeType } = await compressImageFile(file, 1400, 0.82);
+          const { base64, mimeType } = await compressImageFile(file, 1024, 0.72);
           return {
             id: `pantry-photo-${Date.now()}-${idx}`,
             base64,
