@@ -10,7 +10,7 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;
 
-app.use(express.json({ limit: '5mb' }));
+app.use(express.json({ limit: '20mb' }));
 
 function getVapidKeys() {
   const publicKey = process.env.VAPID_PUBLIC_KEY;
@@ -45,14 +45,23 @@ app.post('/api/gemini', async (req, res) => {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) return res.status(503).json({ error: 'La IA no está configurada en el servidor.' });
   const { model, contents, config } = req.body || {};
-  if (!['gemini-3-flash-preview', 'gemini-1.5-flash'].includes(model) || !contents) {
+  const allowedModels = ['gemini-4-hydrogen', 'gemini-3-flash-preview', 'gemini-3.5-flash'];
+  if (!allowedModels.includes(model) || !contents) {
     return res.status(400).json({ error: 'La solicitud de IA no es válida.' });
   }
   try {
-    const ai = new GoogleGenAI({ apiKey });
+    const ai = new GoogleGenAI({
+      apiKey,
+      httpOptions: {
+        headers: {
+          'User-Agent': 'aistudio-build',
+        },
+      },
+    });
     const result = await ai.models.generateContent({ model, contents, config });
     return res.json({ text: result.text || '' });
-  } catch {
+  } catch (err: any) {
+    console.error('[Gemini] Error al procesar solicitud:', err?.message || err);
     return res.status(502).json({ error: 'El servicio de IA no pudo completar la solicitud.' });
   }
 });

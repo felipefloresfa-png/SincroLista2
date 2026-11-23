@@ -10,7 +10,14 @@ export async function generateAIContent(request: Record<string, any>): Promise<{
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${idToken}` },
     body: JSON.stringify(request),
   });
-  if (!response.ok) throw new Error("No se pudo completar la solicitud de IA.");
+  if (!response.ok) {
+    let message = "No se pudo completar la solicitud de IA.";
+    try {
+      const errJson = await response.json();
+      if (errJson?.error) message = errJson.error;
+    } catch {}
+    throw new Error(message);
+  }
   return response.json();
 }
 
@@ -461,5 +468,102 @@ Extrae en JSON:
     }))
   };
 }
+
+export interface PantryImageInput {
+  base64: string;
+  mimeType: string;
+}
+
+export interface PantryVisionItem {
+  name: string;
+  category: string;
+  stockStatus: 'ok' | 'low';
+  estimatedQuantity: string;
+  notes?: string;
+}
+
+export interface PantryVisionResult {
+  summary: string;
+  detectedItems: PantryVisionItem[];
+}
+
+/**
+ * Analiza una o varias fotos de la despensa/refrigerador usando Gemini 4 Hydrogen (Visión)
+ * para listar lo que hay visible y detectar envases que están por acabarse.
+ */
+export async function analyzePantryImagesWithAI(
+  images: PantryImageInput[],
+  knownStaples: string[] = []
+): Promise<PantryVisionResult> {
+  if (!images || images.length === 0) {
+    throw new Error("Sube al menos una foto de tu despensa o refrigerador.");
+  }
+
+  const imageParts = images.map((img) => ({
+    inlineData: {
+      mimeType: img.mimeType || 'image/jpeg',
+      data: img.base64.replace(/^data:image\/[a-zA-Z0-9+.-]+;base64,/, ''),
+    },
+  }));
+
+  const staplesHint = knownStaples.length > 0
+    ? `\nPRODUCTOS HABITUALES DEL HOGAR (usa estos nombres exactos cuando reconozcas el producto correspondiente): ${knownStaples.slice(0, 60).join(', ')}.`
+    : '';
+
+  const prompt = `Observa cuidadosamente estas ${images.length} foto(s) de una despensa, alacena o refrigerador del hogar.
+Tu tarea es identificar TODOS los productos de supermercado y alimentos visibles para hacer un inventario preciso.
+
+REGLAS:
+1. Lista únicamente productos realmente visibles y reconocibles en las imágenes. No inventes productos que no se ven.
+2. Usa nombres limpios y con ortografía/tildes correctas en español (ej: "Atún", "Azúcar", "Aceite", "Arroz", "Leche", "Café", "Huevos", "Pan de molde", "Orégano", "Jabón"). Si el envase es claramente identificable (ej. "Aceite de oliva", "Salsa de tomate", "Mantequilla de maní"), inclúyelo de forma clara.
+3. Evita repetir el mismo producto si aparece en más de una foto (consólidalo en una sola entrada).
+4. En "stockStatus":
+   - Usa "low" SOLO si el producto se ve claramente casi vacío, por acabarse, abierto con poco contenido o queda una última unidad suelta.
+   - Usa "ok" cuando haya cantidad normal o suficiente.
+5. En "estimatedQuantity": indica brevemente lo observado (ej: "2 latas", "1 botella", "1/4 frasco", "queda poco").
+6. Categoría válida: "Frutas y Verduras", "Carnes y Pescados", "Lácteos y Huevos", "Despensa", "Panadería", "Congelados", "Bebidas", "Alcohol", "Higiene y Cuidado Personal", "Limpieza del Hogar", "Mascotas", "Bebés", "Otros".${staplesHint}
+
+Devuelve un JSON con:
+- summary: breve resumen de 1 línea en español de lo encontrado.
+- detectedItems: arreglo con { name, category, stockStatus, estimatedQuantity, notes }.`;
+
+  const response = await generateAIContent({
+    model: 'gemini-4-hydrogen',
+    contents: {
+      parts: [...imageParts, { text: prompt }],
+    },
+    config: {
+      responseMimeType: 'application/json',
+      responseSchema: {
+        type: Type.OBJECT,
+        properties: {
+          summary: { type: Type.STRING },
+          detectedItems: {
+            type: Type.ARRAY,
+            items: {
+              type: Type.OBJECT,
+              properties: {
+                name: { type: Type.STRING },
+                category: { type: Type.STRING },
+                stockStatus: { type: Type.STRING, enum: ['ok', 'low'] },
+                estimatedQuantity: { type: Type.STRING },
+                notes: { type: Type.STRING },
+              },
+              required: ['name', 'category', 'stockStatus', 'estimatedQuantity'],
+            },
+          },
+        },
+        required: ['summary', 'detectedItems'],
+      },
+    },
+  });
+
+  const parsed = JSON.parse(response.text || '{}');
+  return {
+    summary: parsed.summary || 'Despensa analizada correctamente',
+    detectedItems: Array.isArray(parsed.detectedItems) ? parsed.detectedItems : [],
+  };
+}
+
 
 

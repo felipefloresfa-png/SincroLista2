@@ -126,6 +126,7 @@ import {
   normalizeItemKey 
 } from './lib/itemNormalizer';
 import { analyzeItem, getSmartRecommendations, parseVoiceInput, ItemInfo, ParsedVoiceItem, searchMarketPrices, SupermarketPrice, generateAIContent } from './lib/gemini';
+import { PantryScannerModal } from './components/PantryScannerModal';
 import { getInstantCategory } from './lib/itemCache';
 import { NotificationBatcher } from './lib/notificationBatcher.js';
 import { 
@@ -770,6 +771,7 @@ export default function App() {
   const [shoppingMode, setShoppingMode] = useState(false);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [isPantryScannerOpen, setIsPantryScannerOpen] = useState(false);
   const [pushStatus, setPushStatus] = useState<NotificationPermissionStatus>('default');
   const [isPushModalOpen, setIsPushModalOpen] = useState(false);
   const [isPushSubscribing, setIsPushSubscribing] = useState(false);
@@ -2760,6 +2762,7 @@ export default function App() {
               history={history}
               suggestions={suggestions}
               onAddItem={addItem}
+              onOpenPantryScanner={() => setIsPantryScannerOpen(true)}
             />
           ) : currentView === 'stats' ? (
             <StatsDashboard 
@@ -3680,6 +3683,30 @@ export default function App() {
           </motion.div>
         </div>
       )}
+
+      {/* Pantry Photo Scanner Modal */}
+      <PantryScannerModal
+        isOpen={isPantryScannerOpen}
+        onClose={() => setIsPantryScannerOpen(false)}
+        history={history}
+        activities={activities}
+        activeItems={items}
+        lists={lists}
+        activeListId={activeListId}
+        onAddMissingItems={async (missingItemsToAdd, targetListId) => {
+          for (const item of missingItemsToAdd) {
+            await addItem(item.name, item.quantity, targetListId, true);
+          }
+          if (targetListId && targetListId !== activeListId) {
+            setActiveListId(targetListId);
+          }
+          setCurrentView('list');
+          addNotification(
+            `¡${missingItemsToAdd.length} producto${missingItemsToAdd.length === 1 ? '' : 's'} agregado${missingItemsToAdd.length === 1 ? '' : 's'} a tu lista!`,
+            'success'
+          );
+        }}
+      />
 
       {/* Custom Dialog / Prompt */}
       {promptConfig.isOpen && (
@@ -4754,13 +4781,14 @@ const PANTRY_ESSENTIALS = [
   { name: 'Snacks', icon: '🥨', lucide: 'Flame', color: 'bg-orange-50', text: 'text-orange-600', span: 'col-span-1 row-span-1' },
 ];
 
-function PantryView({ onOpenMenu, activeItems, onToggleItem, history = [], suggestions, onAddItem }: { 
+function PantryView({ onOpenMenu, activeItems, onToggleItem, history = [], suggestions, onAddItem, onOpenPantryScanner }: { 
   onOpenMenu: () => void, 
   activeItems: any[],
   onToggleItem: (name: string) => void,
   history: any[],
   suggestions: any[],
-  onAddItem: (name: string) => void
+  onAddItem: (name: string) => void,
+  onOpenPantryScanner: () => void
 }) {
   const IconMap: any = {
     Milk, Coffee, Egg, Droplet, Sparkles, Package, Box, Apple, StickyNote, Beef, Cookie, Flame
@@ -4798,7 +4826,7 @@ function PantryView({ onOpenMenu, activeItems, onToggleItem, history = [], sugge
   return (
     <div className="p-4 md:p-8 lg:p-12 space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500">
       <div className="flex flex-col gap-6">
-        <div className="flex items-center justify-between">
+        <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-3">
             <button 
               onClick={onOpenMenu}
@@ -4818,6 +4846,27 @@ function PantryView({ onOpenMenu, activeItems, onToggleItem, history = [], sugge
               </div>
             </div>
           </div>
+        </div>
+
+        {/* Tarjeta de escaneo inteligente de despensa */}
+        <div className="bg-gradient-to-r from-accent/10 via-emerald-50/70 to-white border border-accent/20 rounded-3xl p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+          <div className="flex items-start sm:items-center gap-3.5">
+            <div className="w-11 h-11 rounded-2xl bg-white border border-accent/15 shadow-xs flex items-center justify-center text-accent shrink-0">
+              <Camera className="w-5 h-5" />
+            </div>
+            <div className="space-y-0.5">
+              <h3 className="text-sm font-black text-text-main">¿Revisando qué falta en casa?</h3>
+              <p className="text-xs text-text-secondary leading-relaxed">
+                Sube una o más fotos de tu despensa o refri: listamos lo que ya tienes y generamos la lista de lo que falta según tus compras habituales.
+              </p>
+            </div>
+          </div>
+          <button
+            onClick={onOpenPantryScanner}
+            className="shrink-0 px-5 py-3 bg-accent hover:bg-accent-dark text-white font-black text-xs rounded-2xl shadow-lg shadow-accent/25 active:scale-95 transition-all flex items-center justify-center gap-2 cursor-pointer"
+          >
+            <Camera className="w-4 h-4" /> Escanear con foto
+          </button>
         </div>
 
         {/* Predictive Insights Section - More compact version */}
