@@ -89,9 +89,9 @@ export class NotificationBatcher {
     storage = safeStorage(),
     quietWindowMs = NOTIFICATION_QUIET_WINDOW_MS,
     progressIntervalMs = NOTIFICATION_PROGRESS_INTERVAL_MS,
-    now = Date.now,
-    setTimer = setTimeout,
-    clearTimer = clearTimeout,
+    now = () => Date.now(),
+    setTimer = (fn, delay) => globalThis.setTimeout(fn, delay),
+    clearTimer = (id) => globalThis.clearTimeout(id),
   }) {
     this.storageKey = storageKey;
     this.send = send;
@@ -155,11 +155,11 @@ export class NotificationBatcher {
   }
 
   schedule() {
-    if (this.timer !== null) this.clearTimer(this.timer);
+    if (this.timer !== null) (0, this.clearTimer)(this.timer);
     this.timer = null;
     if (this.state.events.length === 0) return;
 
-    const now = this.now();
+    const now = (0, this.now)();
     const firstAt = this.state.events[0].createdAt;
     const lastAt = this.state.events[this.state.events.length - 1].createdAt;
     const progressBase = this.state.lastSentAt > 0 ? this.state.lastSentAt : firstAt;
@@ -170,7 +170,7 @@ export class NotificationBatcher {
       ? Math.max(normalDueAt, this.state.lastFailedAt + RETRY_INTERVAL_MS)
       : normalDueAt;
 
-    this.timer = this.setTimer(() => {
+    this.timer = (0, this.setTimer)(() => {
       this.timer = null;
       void this.flush(progressAt <= quietAt ? 'progress' : 'quiet');
     }, Math.max(0, dueAt - now));
@@ -181,7 +181,7 @@ export class NotificationBatcher {
       this.flushRequested = reason;
       return this.flushing;
     }
-    if (this.timer !== null) this.clearTimer(this.timer);
+    if (this.timer !== null) (0, this.clearTimer)(this.timer);
     this.timer = null;
     if (this.state.events.length === 0) return false;
 
@@ -220,7 +220,7 @@ export class NotificationBatcher {
   }
 
   dispose() {
-    if (this.timer !== null) this.clearTimer(this.timer);
+    if (this.timer !== null) (0, this.clearTimer)(this.timer);
     this.timer = null;
     this.persist();
   }

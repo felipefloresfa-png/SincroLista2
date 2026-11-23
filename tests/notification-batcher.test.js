@@ -111,3 +111,27 @@ test('ignora eventos duplicados y construye un título y mensaje descriptivos', 
   batcher.dispose();
   assert.ok(NOTIFICATION_PROGRESS_INTERVAL_MS > NOTIFICATION_QUIET_WINDOW_MS);
 });
+
+test('no invoca setTimer ni clearTimer con la instancia como contexto this', () => {
+  function strictSetTimer() {
+    if (this !== undefined && this !== globalThis) {
+      throw new TypeError('Illegal invocation');
+    }
+    return 1;
+  }
+  function strictClearTimer() {
+    if (this !== undefined && this !== globalThis) {
+      throw new TypeError('Illegal invocation');
+    }
+  }
+  const batcher = new NotificationBatcher({
+    storageKey: 'strict-this-test',
+    send: async () => true,
+    storage: null,
+    setTimer: strictSetTimer,
+    clearTimer: strictClearTimer,
+  });
+  batcher.enqueue({ id: 'x1', type: 'add', itemName: 'Atún' });
+  batcher.dispose();
+});
+
