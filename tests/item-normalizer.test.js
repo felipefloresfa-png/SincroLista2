@@ -69,3 +69,21 @@ test('deduplicateItemList merges spelling variants into canonical item', () => {
   assert.equal(atunItem.name, 'Atún');
   assert.equal(atunItem.quantity, '3'); // 1 + 2
 });
+
+test('unifies protein yogurt synonyms into Yogurt proteína', () => {
+  assert.equal(areItemsEquivalent('Yogurt protein', 'Yogurt proteína'), true);
+  assert.equal(areItemsEquivalent('Yogurt de proteína', 'Yogurt protein'), true);
+  assert.equal(areItemsEquivalent('yogur de proteina', 'Yogurt proteína'), true);
+
+  assert.equal(getCanonicalItem('yogurt protein').name, 'Yogurt proteína');
+  assert.equal(getCanonicalItem('yogurt de proteina').name, 'Yogurt proteína');
+  assert.equal(getCanonicalItem('yogur pina').name, 'Yogurt piña');
+});
+
+test('normalizes water variants and Cachantún spelling', () => {
+  assert.equal(areItemsEquivalent('Agua cachantum', 'Agua Cachantún'), true);
+  assert.equal(areItemsEquivalent('cachantun', 'Agua Cachantún'), true);
+  assert.equal(getCanonicalItem('agua cachantum').name, 'Agua Cachantún');
+  assert.equal(getCanonicalItem('agua sin gas').name, 'Agua sin gas');
+  assert.equal(getCanonicalItem('agua con gas').name, 'Agua con gas');
+});

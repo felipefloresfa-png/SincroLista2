@@ -7,18 +7,34 @@ export async function generateAIContent(request: Record<string, any>): Promise<{
   const idToken = await user.getIdToken();
   const response = await fetch("/api/gemini", {
     method: "POST",
+    credentials: "same-origin",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${idToken}` },
     body: JSON.stringify(request),
   });
-  if (!response.ok) {
-    let message = "No se pudo completar la solicitud de IA.";
-    try {
-      const errJson = await response.json();
-      if (errJson?.error) message = errJson.error;
-    } catch {}
-    throw new Error(message);
+
+  const rawBody = await response.text();
+  const trimmed = rawBody.trimStart();
+
+  if (trimmed.startsWith("<")) {
+    throw new Error("Tu sesión de vista previa se actualizó o expiró. Recarga la página e inténtalo nuevamente.");
   }
-  return response.json();
+
+  let parsedBody: any = null;
+  try {
+    parsedBody = rawBody ? JSON.parse(rawBody) : null;
+  } catch {
+    parsedBody = null;
+  }
+
+  if (!response.ok) {
+    throw new Error(parsedBody?.error || "No se pudo completar la solicitud de IA.");
+  }
+
+  if (!parsedBody || typeof parsedBody !== "object") {
+    throw new Error("El servidor devolvió una respuesta inesperada. Recarga la página e inténtalo de nuevo.");
+  }
+
+  return parsedBody as { text: string };
 }
 
 export interface ItemInfo {
@@ -63,7 +79,7 @@ export async function analyzeItem(itemName: string): Promise<ItemInfo> {
 
     return JSON.parse(response.text || '{}') as ItemInfo;
   } catch (error) {
-    console.error("Error analyzing item:", error);
+    console.warn("Error analyzing item, using local fallback:", error);
     return {
       correctedName: itemName.charAt(0).toUpperCase() + itemName.slice(1),
       category: "Otros",
@@ -558,7 +574,12 @@ Devuelve un JSON con:
     },
   });
 
-  const parsed = JSON.parse(response.text || '{}');
+  const cleanJsonText = (response.text || '{}')
+    .replace(/^```json\s*/i, '')
+    .replace(/^```\s*/i, '')
+    .replace(/\s*```$/i, '')
+    .trim();
+  const parsed = JSON.parse(cleanJsonText || '{}');
   return {
     summary: parsed.summary || 'Despensa analizada correctamente',
     detectedItems: Array.isArray(parsed.detectedItems) ? parsed.detectedItems : [],

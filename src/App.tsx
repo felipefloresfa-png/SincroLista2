@@ -127,6 +127,13 @@ import {
 } from './lib/itemNormalizer';
 import { analyzeItem, getSmartRecommendations, parseVoiceInput, ItemInfo, ParsedVoiceItem, searchMarketPrices, SupermarketPrice, generateAIContent } from './lib/gemini';
 import { PantryScannerModal } from './components/PantryScannerModal';
+import { PantryView } from './components/PantryView';
+import {
+  buildPantryCatalog,
+  buildChecklistPantryAlerts,
+  findPantryConsumptionHint,
+  type PantryConsumptionHint,
+} from './lib/pantryCatalog';
 import { getInstantCategory } from './lib/itemCache';
 import { NotificationBatcher } from './lib/notificationBatcher.js';
 import { 
@@ -772,6 +779,7 @@ export default function App() {
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isPantryScannerOpen, setIsPantryScannerOpen] = useState(false);
+  const [isPantryAlertsDismissed, setIsPantryAlertsDismissed] = useState(false);
   const [pushStatus, setPushStatus] = useState<NotificationPermissionStatus>('default');
   const [isPushModalOpen, setIsPushModalOpen] = useState(false);
   const [isPushSubscribing, setIsPushSubscribing] = useState(false);
@@ -1030,6 +1038,22 @@ export default function App() {
       limit: 10
     });
   }, [newItemName, suggestionsIndex, items]);
+
+  // Modelo compartido de duración estimada y stock de despensa conectado entre Despensa <-> Checklist <-> Historial
+  const pantryCatalog = useMemo(() => {
+    return buildPantryCatalog({
+      history,
+      activities,
+      activeItems: items,
+    });
+  }, [history, activities, items]);
+
+  const checklistPantryAlerts = useMemo(() => {
+    return buildChecklistPantryAlerts({
+      catalogItems: pantryCatalog,
+      max: 5,
+    });
+  }, [pantryCatalog]);
 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     setNewItemName(e.target.value);
@@ -1908,7 +1932,7 @@ export default function App() {
               console.log(`IA fondo: ${finalName} actualizado ->`, updates);
             }
           } catch (bgError) {
-            console.error("Error en análisis de fondo:", bgError);
+            console.warn("Análisis IA de fondo omitido:", bgError instanceof Error ? bgError.message : bgError);
           }
         })();
 
@@ -2202,7 +2226,7 @@ export default function App() {
       const result = JSON.parse(response.text);
       setSuggestions(result.suggestions || []);
     } catch (e) {
-      console.error("Gemini Error:", e);
+      console.warn("Sugerencias IA omitidas:", e instanceof Error ? e.message : e);
     } finally {
       setLoadingSuggestions(false);
     }
@@ -2220,9 +2244,9 @@ export default function App() {
     addNotification(`Sugerencia aceptada: ${name}`, 'success');
   };
 
-  const handlePantryToggle = async (name: string) => {
+  const handlePantryStep = async (name: string, delta: 1 | -1 = 1, initialQty: number = 1) => {
     let listId = activeListId;
-    
+
     if (!listId && lists.length > 0) {
       listId = lists[0].id;
       setActiveListId(listId);
@@ -2233,25 +2257,74 @@ export default function App() {
       return;
     }
 
-    const existing = items.find(i => i.name.toLowerCase() === name.toLowerCase());
-    
+    const existing = items.find(
+      (i) => i.listId === listId && !i.checked && areItemsEquivalent(i.name, name)
+    );
+
+    if (delta === -1) {
+      if (!existing) return;
+      const currentQty = parseInt(existing.quantity, 10) || 1;
+      try {
+        if (currentQty <= 1) {
+          await deleteDoc(doc(db, 'items', existing.id));
+          addNotification(`${existing.name} quitado de la lista`, 'info');
+        } else {
+          const newQty = (currentQty - 1).toString();
+          await updateDoc(doc(db, 'items', existing.id), { quantity: newQty });
+        }
+      } catch {
+        addNotification("Error al actualizar", 'error');
+      }
+      return;
+    }
+
     if (existing) {
-      // Incrementar cantidad
-      const currentQty = parseInt(existing.quantity) || 1;
+      const currentQty = parseInt(existing.quantity, 10) || 1;
       const newQty = (currentQty + 1).toString();
       try {
         await updateDoc(doc(db, 'items', existing.id), {
           quantity: newQty,
-          checked: false 
+          checked: false,
         });
-        addNotification(`${name} actualizado: x${newQty}`, 'success');
-      } catch (e) {
+      } catch {
         addNotification("Error al actualizar", 'error');
       }
     } else {
-      // Agregar nuevo con listId explícito si acabamos de setearlo
-      await addItem(name, '1', listId);
-      addNotification(`${name} agregado a la lista`, 'success');
+      const safeInitial = Math.max(1, Math.round(initialQty) || 1);
+      await addItem(name, safeInitial.toString(), listId, true);
+      const canonicalName = getCanonicalItem(name).name || name;
+      addNotification(
+        safeInitial > 1
+          ? `${canonicalName} (x${safeInitial}) agregado al checklist`
+          : `${canonicalName} agregado al checklist`,
+        'success'
+      );
+    }
+  };
+
+  const handleAddMultipleFromPantry = async (entries: Array<{ name: string; quantity: number }>) => {
+    let listId = activeListId;
+    if (!listId && lists.length > 0) {
+      listId = lists[0].id;
+      setActiveListId(listId);
+    }
+    if (!listId || !profile || entries.length === 0) return;
+
+    let addedCount = 0;
+    for (const entry of entries) {
+      const alreadyPending = items.some(
+        (i) => i.listId === listId && !i.checked && areItemsEquivalent(i.name, entry.name)
+      );
+      if (alreadyPending) continue;
+      const qty = Math.max(1, Math.round(entry.quantity) || 1);
+      await addItem(entry.name, qty.toString(), listId, true);
+      addedCount += 1;
+    }
+    if (addedCount > 0) {
+      addNotification(
+        `${addedCount} ${addedCount === 1 ? 'producto agregado' : 'productos agregados'} desde Despensa`,
+        'success'
+      );
     }
   };
 
@@ -2758,10 +2831,17 @@ export default function App() {
             <PantryView 
               onOpenMenu={() => setIsSidebarOpen(true)}
               activeItems={items}
-              onToggleItem={(name) => handlePantryToggle(name)}
+              catalogItems={pantryCatalog}
+              lists={lists}
+              activeListId={activeListId}
+              onSelectListId={setActiveListId}
+              onGoToList={() => setCurrentView('list')}
               history={history}
+              activities={activities}
               suggestions={suggestions}
-              onAddItem={addItem}
+              onStepItem={handlePantryStep}
+              onAddMultiple={handleAddMultipleFromPantry}
+              onAddCustomItem={(name) => handlePantryStep(name, 1, 1)}
               onOpenPantryScanner={() => setIsPantryScannerOpen(true)}
             />
           ) : currentView === 'stats' ? (
@@ -3072,6 +3152,69 @@ export default function App() {
           )}
         </div>
 
+        {/* Conexión directa Despensa -> Checklist: productos cuya duración estimada está por agotarse */}
+        {!shoppingMode && !searchQuery && !isPantryAlertsDismissed && checklistPantryAlerts.length > 0 && (
+          <div className="mb-5 bg-white border border-border rounded-2xl p-4 space-y-3">
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2 min-w-0">
+                <ShoppingBasket className="w-4 h-4 text-accent shrink-0" />
+                <span className="text-xs font-bold text-text-main truncate">
+                  Según tu despensa, podrían faltarte hoy
+                </span>
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => setCurrentView('pantry')}
+                  className="text-xs font-semibold text-accent hover:text-accent-dark whitespace-nowrap cursor-pointer"
+                >
+                  Ver despensa
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setIsPantryAlertsDismissed(true)}
+                  aria-label="Ocultar sugerencias de despensa"
+                  className="p-1 text-text-secondary hover:text-text-main rounded-lg cursor-pointer"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2 overflow-x-auto no-scrollbar pb-0.5">
+              {checklistPantryAlerts.map((alert) => {
+                const qtyTag = alert.habitualQuantity > 1 ? ` x${alert.habitualQuantity}` : '';
+                const timingTag =
+                  alert.daysRemaining !== null
+                    ? alert.daysRemaining <= 0
+                      ? alert.daysRemaining < 0
+                        ? `pasado ${Math.abs(alert.daysRemaining)} d`
+                        : 'toca hoy'
+                      : `quedan ${alert.daysRemaining} d`
+                    : 'frecuente';
+
+                const targetName = alert.preferredVariant || alert.name;
+                return (
+                  <button
+                    key={alert.key}
+                    type="button"
+                    onClick={() => handlePantryStep(targetName, 1, alert.habitualQuantity)}
+                    className="shrink-0 min-h-[38px] px-3 py-1.5 bg-gray-50 hover:bg-accent hover:text-white border border-border hover:border-accent rounded-xl text-xs transition-colors flex items-center gap-2 cursor-pointer group tabular-nums"
+                  >
+                    <Plus className="w-3.5 h-3.5 text-accent group-hover:text-white shrink-0" />
+                    <span className="font-semibold text-text-main group-hover:text-white whitespace-nowrap">
+                      {targetName}{qtyTag}
+                    </span>
+                    <span className="text-[11px] text-text-secondary group-hover:text-white/85 whitespace-nowrap">
+                      · {timingTag}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
         {items.length > 0 && !shoppingMode && (
           <motion.div 
             initial={{ opacity: 0, scale: 0.98 }}
@@ -3181,7 +3324,8 @@ export default function App() {
                             onConfirm: (val) => updateItemPrice(item, val)
                           });
                         }}
-                        shoppingMode={shoppingMode} 
+                        shoppingMode={shoppingMode}
+                        consumptionHint={findPantryConsumptionHint(item.name, pantryCatalog)}
                       />
                     ))}
                   </div>
@@ -3979,9 +4123,24 @@ interface ItemRowProps {
   onTogglePriority: () => void | Promise<void>;
   onUpdateCategory: () => void | Promise<void>;
   shoppingMode: boolean;
+  consumptionHint?: PantryConsumptionHint | null;
 }
 
-function ItemRow({ item, onToggle, onDelete, onEdit, onUpdateQty, onUpdatePrice, onTogglePriority, onUpdateCategory, shoppingMode }: ItemRowProps) {
+function ItemRow({ item, onToggle, onDelete, onEdit, onUpdateQty, onUpdatePrice, onTogglePriority, onUpdateCategory, shoppingMode, consumptionHint }: ItemRowProps) {
+  const showRecentWarning =
+    !shoppingMode &&
+    !item.checked &&
+    consumptionHint &&
+    consumptionHint.daysSinceLastPurchase <= 2 &&
+    (consumptionHint.estimatedDurationDays ?? 0) >= 7;
+
+  const showCadenceHint =
+    !shoppingMode &&
+    !item.checked &&
+    consumptionHint &&
+    !showRecentWarning &&
+    consumptionHint.estimatedDurationDays !== null;
+
   return (
     <div className={cn(
       "flex items-center gap-1.5 p-1.5 rounded-xl transition-all grow group relative",
@@ -4030,6 +4189,16 @@ function ItemRow({ item, onToggle, onDelete, onEdit, onUpdateQty, onUpdatePrice,
           )}
         </div>
         {item.notes && <p className="text-[9px] text-text-secondary mt-0.5 truncate">{item.notes}</p>}
+        {showRecentWarning && consumptionHint && (
+          <p className="text-[10px] text-amber-600 mt-0.5 truncate tabular-nums">
+            Comprado {consumptionHint.daysSinceLastPurchase === 0 ? 'hoy' : `hace ${consumptionHint.daysSinceLastPurchase} d`} · Suele durar {consumptionHint.estimatedDurationDays} d
+          </p>
+        )}
+        {showCadenceHint && consumptionHint && (
+          <p className="text-[10px] text-text-secondary mt-0.5 truncate tabular-nums">
+            Última vez: {consumptionHint.daysSinceLastPurchase === 0 ? 'hoy' : `hace ${consumptionHint.daysSinceLastPurchase} d`} · Dura aprox. {consumptionHint.estimatedDurationDays} d
+          </p>
+        )}
       </div>
 
       <div className="flex items-center gap-1 shrink-0">
@@ -4766,220 +4935,7 @@ function StoresView({ onOpenMenu, addNotification }: { onOpenMenu: () => void, a
   );
 }
 
-const PANTRY_ESSENTIALS = [
-  { name: 'Leche', icon: '🥛', lucide: 'Milk', color: 'bg-blue-50', text: 'text-blue-600', span: 'col-span-2 row-span-2' },
-  { name: 'Pan', icon: '🍞', lucide: 'Box', color: 'bg-orange-50', text: 'text-orange-600', span: 'col-span-1 row-span-1' },
-  { name: 'Café', icon: '☕', lucide: 'Coffee', color: 'bg-amber-50', text: 'text-amber-600', span: 'col-span-1 row-span-1' },
-  { name: 'Detergente', icon: '🧼', lucide: 'Sparkles', color: 'bg-purple-50', text: 'text-purple-600', span: 'col-span-1 row-span-2' },
-  { name: 'Huevos', icon: '🥚', lucide: 'Egg', color: 'bg-yellow-50', text: 'text-yellow-600', span: 'col-span-1 row-span-1' },
-  { name: 'Arroz', icon: '🍚', lucide: 'Package', color: 'bg-gray-50', text: 'text-gray-600', span: 'col-span-1 row-span-1' },
-  { name: 'Carne', icon: '🥩', lucide: 'Beef', color: 'bg-red-50', text: 'text-red-600', span: 'col-span-2 row-span-2' },
-  { name: 'Pasta', icon: '🍝', lucide: 'Package', color: 'bg-yellow-50', text: 'text-yellow-600', span: 'col-span-1 row-span-1' },
-  { name: 'Galletas', icon: '🍪', lucide: 'Cookie', color: 'bg-amber-50', text: 'text-amber-600', span: 'col-span-1 row-span-1' },
-  { name: 'Fruta', icon: '🍎', lucide: 'Apple', color: 'bg-red-50', text: 'text-red-600', span: 'col-span-1 row-span-1' },
-  { name: 'Aceite', icon: '🫗', lucide: 'Droplet', color: 'bg-yellow-50', text: 'text-yellow-600', span: 'col-span-1 row-span-1' },
-  { name: 'Snacks', icon: '🥨', lucide: 'Flame', color: 'bg-orange-50', text: 'text-orange-600', span: 'col-span-1 row-span-1' },
-];
 
-function PantryView({ onOpenMenu, activeItems, onToggleItem, history = [], suggestions, onAddItem, onOpenPantryScanner }: { 
-  onOpenMenu: () => void, 
-  activeItems: any[],
-  onToggleItem: (name: string) => void,
-  history: any[],
-  suggestions: any[],
-  onAddItem: (name: string) => void,
-  onOpenPantryScanner: () => void
-}) {
-  const IconMap: any = {
-    Milk, Coffee, Egg, Droplet, Sparkles, Package, Box, Apple, StickyNote, Beef, Cookie, Flame
-  };
-
-  // Calcular items frecuentes del historial que no están ya en PANTRY_ESSENTIALS
-  const frequentItems = useMemo(() => {
-    if (!Array.isArray(history)) return [];
-    const counts: Record<string, number> = {};
-    history.forEach(entry => {
-      entry.items?.forEach((item: any) => {
-        const name = item.name.charAt(0).toUpperCase() + item.name.slice(1).toLowerCase();
-        // Solo agregar si no está en la lista estática
-        if (!PANTRY_ESSENTIALS.find(p => p.name.toLowerCase() === name.toLowerCase())) {
-          counts[name] = (counts[name] || 0) + 1;
-        }
-      });
-    });
-
-    return Object.entries(counts)
-      .sort(([, a], [, b]) => b - a)
-      .slice(0, 10) // Mostrar hasta 10 items frecuentes extra
-      .map(([name]) => ({
-        name,
-        icon: '✨',
-        lucide: 'Sparkles',
-        color: 'bg-emerald-50',
-        text: 'text-emerald-600',
-        span: 'col-span-1 row-span-1'
-      }));
-  }, [history]);
-
-  const allPantryItems = [...PANTRY_ESSENTIALS, ...frequentItems];
-
-  return (
-    <div className="p-4 md:p-8 lg:p-12 space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500">
-      <div className="flex flex-col gap-6">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div className="flex items-center gap-3">
-            <button 
-              onClick={onOpenMenu}
-              className="lg:hidden p-2.5 bg-white border border-border rounded-xl shadow-sm active:scale-95 transition-all"
-            >
-              <Menu className="w-5 h-5 text-text-main" />
-            </button>
-            <div className="flex flex-col gap-1">
-              <div className="flex items-center gap-2">
-                <div className="w-10 h-10 bg-accent/10 rounded-xl grid place-items-center sm:w-12 sm:h-12">
-                  <ShoppingBasket className="w-5 h-5 text-accent sm:w-6 sm:h-6" />
-                </div>
-                <div>
-                  <h2 className="text-2xl sm:text-3xl font-black tracking-tighter text-text-main leading-tight">Modo Despensa</h2>
-                  <p className="text-[10px] sm:text-xs text-text-secondary font-medium italic">Agrega tus esenciales en un toque</p>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        {/* Tarjeta de escaneo inteligente de despensa */}
-        <div className="bg-gradient-to-r from-accent/10 via-emerald-50/70 to-white border border-accent/20 rounded-3xl p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-          <div className="flex items-start sm:items-center gap-3.5">
-            <div className="w-11 h-11 rounded-2xl bg-white border border-accent/15 shadow-xs flex items-center justify-center text-accent shrink-0">
-              <Camera className="w-5 h-5" />
-            </div>
-            <div className="space-y-0.5">
-              <h3 className="text-sm font-black text-text-main">¿Revisando qué falta en casa?</h3>
-              <p className="text-xs text-text-secondary leading-relaxed">
-                Sube una o más fotos de tu despensa o refri: listamos lo que ya tienes y generamos la lista de lo que falta según tus compras habituales.
-              </p>
-            </div>
-          </div>
-          <button
-            onClick={onOpenPantryScanner}
-            className="shrink-0 px-5 py-3 bg-accent hover:bg-accent-dark text-white font-black text-xs rounded-2xl shadow-lg shadow-accent/25 active:scale-95 transition-all flex items-center justify-center gap-2 cursor-pointer"
-          >
-            <Camera className="w-4 h-4" /> Escanear con foto
-          </button>
-        </div>
-
-        {/* Predictive Insights Section - More compact version */}
-        {suggestions.length > 0 && (
-          <div className="flex flex-col gap-4">
-            <div className="flex items-center gap-2">
-              <Sparkles className="w-4 h-4 text-accent" />
-              <h3 className="text-[10px] font-black uppercase tracking-widest text-accent">Análisis Predictivo</h3>
-            </div>
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-              {suggestions.slice(0, 3).map((s, idx) => (
-                <motion.div
-                  key={idx}
-                  initial={{ opacity: 0, scale: 0.95 }}
-                  animate={{ opacity: 1, scale: 1 }}
-                  transition={{ delay: idx * 0.05 }}
-                  className="bg-white border border-border rounded-2xl p-4 flex items-center gap-4 hover:border-accent transition-all group relative overflow-hidden"
-                >
-                  <div className="w-10 h-10 rounded-xl bg-accent/10 flex items-center justify-center shrink-0">
-                    <TrendingUp className="w-5 h-5 text-accent" />
-                  </div>
-                  
-                  <div className="flex-1 min-w-0 py-1">
-                    <h4 className="text-sm font-black text-text-main leading-tight mb-0.5 truncate">{s.name}</h4>
-                    <p className="text-[11px] font-medium text-text-secondary leading-[1.3] line-clamp-2">
-                      {s.reason}
-                    </p>
-                  </div>
-                  
-                  <button
-                    onClick={() => onAddItem(s.name)}
-                    className="w-10 h-10 rounded-xl bg-accent text-white flex items-center justify-center hover:bg-accent-dark transition-colors shrink-0 shadow-lg shadow-accent/20 active:scale-90"
-                  >
-                    <Plus className="w-5 h-5" />
-                  </button>
-                </motion.div>
-              ))}
-            </div>
-          </div>
-        )}
-
-        <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 auto-rows-[100px] md:auto-rows-[120px] gap-3 h-full">
-          {allPantryItems.map((item, i) => {
-            const Icon = IconMap[item.lucide] || Package;
-            const isInList = activeItems.some(ai => ai.name.toLowerCase() === item.name.toLowerCase() && !ai.checked);
-            const currentQty = activeItems.find(ai => ai.name.toLowerCase() === item.name.toLowerCase() && !ai.checked)?.quantity || null;
-
-            return (
-              <motion.button
-                key={item.name}
-                initial={{ opacity: 0, scale: 0.9 }}
-                animate={{ opacity: 1, scale: 1 }}
-                transition={{ delay: i * 0.05 }}
-                onClick={() => onToggleItem(item.name)}
-                className={cn(
-                  "relative rounded-3xl p-4 flex flex-col items-center justify-center gap-2 transition-all active:scale-95 group border-2",
-                  item.span,
-                  isInList 
-                    ? "bg-white border-accent shadow-lg shadow-accent/5" 
-                    : `${item.color} border-transparent hover:border-black/5`
-                )}
-              >
-                <div className={cn(
-                  "p-3 rounded-2xl transition-all duration-300",
-                  isInList ? "bg-accent/10 scale-110" : "bg-white/80 group-hover:bg-white shadow-sm"
-                )}>
-                  <Icon className={cn("w-6 h-6 md:w-8 md:h-8", isInList ? "text-accent" : item.text)} />
-                </div>
-                
-                <div className="text-center">
-                  <span className={cn(
-                    "text-[10px] md:text-xs font-black uppercase tracking-widest block",
-                    isInList ? "text-accent" : "text-text-main"
-                  )}>
-                    {item.name}
-                  </span>
-                  {isInList && (
-                    <span className="text-[8px] font-bold text-accent/60 uppercase">
-                      En lista {currentQty && `(x${currentQty})`}
-                    </span>
-                  )}
-                </div>
-
-                {isInList && (
-                  <div className="absolute top-2 right-2">
-                    <motion.div 
-                      initial={{ scale: 0 }}
-                      animate={{ scale: 1 }}
-                      className="w-5 h-5 bg-accent text-white rounded-full flex items-center justify-center shadow-md border-2 border-white"
-                    >
-                      <Check className="w-3 h-3" strokeWidth={4} />
-                    </motion.div>
-                  </div>
-                )}
-              </motion.button>
-            );
-          })}
-        </div>
-      </div>
-
-      <div className="p-6 bg-accent/5 border border-accent/10 rounded-3xl space-y-3">
-        <div className="flex items-center gap-2 text-accent">
-          <Star className="w-4 h-4 fill-accent" />
-          <h3 className="text-sm font-black uppercase tracking-widest">Tip de Ahorro</h3>
-        </div>
-        <p className="text-xs text-text-secondary leading-relaxed font-medium">
-          El <strong>Modo Despensa</strong> muestra los productos que compras con más frecuencia. 
-          Tocarlos los agrega directamente a tu lista activa con su categoría automática.
-        </p>
-      </div>
-    </div>
-  );
-}
 
 function StatsDashboard({ onOpenMenu, history }: { onOpenMenu: () => void, history: any[] }) {
   const stats = useMemo(() => {
