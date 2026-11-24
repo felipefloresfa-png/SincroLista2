@@ -125,7 +125,7 @@ import {
   deduplicateItemList, 
   normalizeItemKey 
 } from './lib/itemNormalizer';
-import { analyzeItem, getSmartRecommendations, parseVoiceInput, ItemInfo, ParsedVoiceItem, searchMarketPrices, SupermarketPrice, generateAIContent, lookupBarcodes } from './lib/gemini';
+import { analyzeItem, getSmartRecommendations, parseVoiceInput, ItemInfo, ParsedVoiceItem, searchMarketPrices, SupermarketPrice, generateAIContent, lookupBarcodes, lookupProductEntry } from './lib/gemini';
 import { PantryScannerModal } from './components/PantryScannerModal';
 import { ReceiptReviewModal } from './components/ReceiptReviewModal';
 import { PantryView } from './components/PantryView';
@@ -787,6 +787,7 @@ export default function App() {
     storeName: string;
     totalCost: number;
     receiptDate?: Date | null;
+    scanSummary?: string | null;
     items: ReviewableReceiptItem[];
   } | null>(null);
 
@@ -857,6 +858,14 @@ export default function App() {
 
       const baseItems = resolvedItems.length > 0 ? resolvedItems : originalItems;
       const reviewItems = annotateItemsAgainstOriginal(baseItems, originalItems);
+      const verifiedCount = reviewItems.filter((it) => Boolean(it.barcodeSource)).length;
+      const prevCount = originalItems.length;
+      const summaryParts = [
+        `${reviewItems.length} ${reviewItems.length === 1 ? 'producto leído' : 'productos leídos'}`,
+        prevCount > 0 && prevCount !== reviewItems.length ? `antes ${prevCount}` : '',
+        verifiedCount > 0 ? `${verifiedCount} ${verifiedCount === 1 ? 'verificado por código' : 'verificados por código'}` : '',
+      ].filter(Boolean);
+      const scanSummary = `Boleta procesada: ${summaryParts.join(' · ')}.`;
 
       setReceiptReview({
         isOpen: true,
@@ -865,8 +874,10 @@ export default function App() {
         storeName: safeStoreName,
         totalCost: safeTotalCost,
         receiptDate: validDate,
+        scanSummary,
         items: reviewItems,
       });
+      addNotification(scanSummary, "success");
     } catch (err: any) {
       console.error("Error al vincular boleta:", err);
       addNotification(err?.message || "Error al procesar la boleta", "error");
@@ -902,6 +913,7 @@ export default function App() {
       storeName: String(entry.storeName || 'Supermercado').slice(0, 100),
       totalCost: Number(entry.totalCost) > 0 ? Math.round(Number(entry.totalCost)) : 0,
       receiptDate: null,
+      scanSummary: null,
       items: annotateItemsAgainstOriginal(normalizedForEdit, []),
     });
   };
@@ -3236,15 +3248,31 @@ export default function App() {
                     }
                   }}
                   placeholder="Busca o agrega productos..."
-                  className="w-full h-11 bg-white border border-border rounded-2xl pl-11 pr-4 font-bold text-base sm:text-sm text-text-main placeholder:text-gray-400 focus:ring-4 focus:ring-accent/10 focus:border-accent outline-none transition-all shadow-sm shadow-black/5"
+                  className="w-full h-11 bg-white border border-border rounded-2xl pl-11 pr-28 font-bold text-base sm:text-sm text-text-main placeholder:text-gray-400 focus:ring-4 focus:ring-accent/10 focus:border-accent outline-none transition-all shadow-sm shadow-black/5"
                 />
                 {searchQuery && (
-                  <button 
-                    onClick={() => setSearchQuery('')}
-                    className="absolute right-4 top-1/2 -translate-y-1/2 p-1.5 hover:bg-gray-100 rounded-lg transition-colors text-gray-400"
-                  >
-                    <Plus className="w-4 h-4 rotate-45" strokeWidth={3} />
-                  </button>
+                  <div className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-1">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (searchQuery.trim()) {
+                          addItem(searchQuery);
+                          setSearchQuery('');
+                        }
+                      }}
+                      className="px-2.5 py-1 bg-accent text-white text-xs font-semibold rounded-xl hover:bg-accent-dark transition-colors cursor-pointer"
+                    >
+                      + Agregar
+                    </button>
+                    <button 
+                      type="button"
+                      onClick={() => setSearchQuery('')}
+                      aria-label="Limpiar búsqueda"
+                      className="p-1.5 hover:bg-gray-100 rounded-lg transition-colors text-gray-400 cursor-pointer"
+                    >
+                      <Plus className="w-4 h-4 rotate-45" strokeWidth={3} />
+                    </button>
+                  </div>
                 )}
               </div>
             </div>
@@ -3975,18 +4003,27 @@ export default function App() {
           initialStoreName={receiptReview.storeName}
           initialTotalCost={receiptReview.totalCost}
           initialItems={receiptReview.items}
+          scanSummary={receiptReview.scanSummary}
           isRescanning={isScanning}
           onClose={() => setReceiptReview(null)}
           onRescanFile={async (file) => {
             await handleScanReceiptFile(file, receiptReview.targetId);
           }}
-          onLookupItemBarcode={async (barcode, rawName, storeName) => {
-            const res = await lookupBarcodes([{ barcode, rawText: rawName }], storeName);
-            const match = res[barcode];
+          onLookupItem={async (item, storeName) => {
+            const match = await lookupProductEntry(
+              { id: item.id, barcode: item.barcode, rawText: item.name },
+              storeName
+            );
             if (!match?.resolvedName) {
-              addNotification(`No se encontró un producto exacto para el código ${barcode}`, 'info');
+              addNotification(
+                item.barcode
+                  ? `No se encontró coincidencia exacta para el código ${item.barcode}`
+                  : `No se encontró coincidencia exacta para "${item.name}"`,
+                'info'
+              );
               return null;
             }
+            addNotification(`Producto identificado: ${match.resolvedName}`, 'success');
             return {
               resolvedName: match.resolvedName,
               source: match.source,

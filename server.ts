@@ -1,5 +1,5 @@
 import express from 'express';
-import { GoogleGenAI } from '@google/genai';
+import { GoogleGenAI, ThinkingLevel } from '@google/genai';
 import 'dotenv/config';
 import webpush from 'web-push';
 import fs from 'fs';
@@ -122,27 +122,36 @@ app.post('/api/lookup-barcodes', async (req, res) => {
 
   const rawItems = Array.isArray(req.body?.items) ? req.body.items : [];
   const storeName = typeof req.body?.storeName === 'string' ? req.body.storeName.trim().slice(0, 60) : 'Lider Chile';
-  const candidates = rawItems
-    .map((it: any) => ({
-      barcode: String(it?.barcode || '').replace(/\D/g, ''),
-      rawText: typeof it?.rawText === 'string' ? it.rawText.trim().slice(0, 80) : '',
-    }))
-    .filter((it: { barcode: string }) => /^\d{8,14}$/.test(it.barcode) && !/^2\d{12}$/.test(it.barcode))
+
+  const normalizedInputs = rawItems
+    .map((it: any, idx: number) => {
+      const cleanBarcode = String(it?.barcode || '').replace(/\D/g, '');
+      const validBarcode = /^\d{8,14}$/.test(cleanBarcode) && !/^2\d{12}$/.test(cleanBarcode) ? cleanBarcode : '';
+      const rawText = typeof it?.rawText === 'string' ? it.rawText.trim().slice(0, 80) : '';
+      const id = typeof it?.id === 'string' && it.id ? it.id : (validBarcode || `q-${idx}`);
+      return { id, barcode: validBarcode, rawText };
+    })
+    .filter((it: { barcode: string; rawText: string }) => Boolean(it.barcode || it.rawText))
     .slice(0, 12);
 
-  if (candidates.length === 0) {
-    return res.json({ results: {} });
+  if (normalizedInputs.length === 0) {
+    return res.json({ results: {}, queryResults: {} });
   }
 
   const results: Record<string, { resolvedName: string; brand?: string; source: string; sourceUrl?: string }> = {};
-  const unresolved: Array<{ barcode: string; rawText: string }> = [];
+  const queryResults: Record<string, { resolvedName: string; brand?: string; source: string; sourceUrl?: string }> = {};
+  const unresolved: Array<{ id: string; barcode: string; rawText: string }> = [];
 
-  // 1. Consulta rápida en Open Food Facts
+  // 1. Consulta rápida en Open Food Facts para los que traen código EAN/UPC
   await Promise.all(
-    candidates.map(async ({ barcode, rawText }) => {
+    normalizedInputs.map(async (item) => {
+      if (!item.barcode) {
+        unresolved.push(item);
+        return;
+      }
       try {
         const resp = await fetch(
-          `https://world.openfoodfacts.org/api/v2/product/${barcode}.json?fields=product_name,product_name_es,brands,quantity`,
+          `https://world.openfoodfacts.org/api/v2/product/${item.barcode}.json?fields=product_name,product_name_es,brands,quantity`,
           { signal: AbortSignal.timeout(2500) }
         );
         if (resp.ok) {
@@ -157,23 +166,25 @@ app.post('/api/lookup-barcodes', async (req, res) => {
             const fullName = brand && !rawName.toLowerCase().includes(brand.toLowerCase())
               ? `${rawName} ${brand}`.trim()
               : rawName;
-            results[barcode] = {
+            const entry = {
               resolvedName: fullName.slice(0, 80),
               brand: brand || undefined,
               source: 'OpenFoodFacts',
-              sourceUrl: `https://world.openfoodfacts.org/product/${barcode}`,
+              sourceUrl: `https://world.openfoodfacts.org/product/${item.barcode}`,
             };
+            results[item.barcode] = entry;
+            queryResults[item.id] = entry;
             return;
           }
         }
       } catch {
         // Continuar al fallback de búsqueda web
       }
-      unresolved.push({ barcode, rawText });
+      unresolved.push(item);
     })
   );
 
-  // 2. Fallback con Google Search Grounding (Gemini 4 Hydrogen) para códigos chilenos no listados en OpenFoodFacts
+  // 2. Fallback con Google Search Grounding (Gemini 4 Hydrogen + ThinkingLevel.LOW)
   const apiKey = process.env.GEMINI_API_KEY;
   if (unresolved.length > 0 && apiKey) {
     try {
@@ -187,20 +198,23 @@ app.post('/api/lookup-barcodes', async (req, res) => {
         },
       });
       const listPrompt = unresolved
-        .map((u, i) => `${i + 1}. Código: ${u.barcode}${u.rawText ? ` (en boleta ${storeName}: "${u.rawText}")` : ''}`)
+        .map((u, i) =>
+          `${i + 1}. id="${u.id}" | ${u.barcode ? `Código: ${u.barcode} | ` : ''}Texto boleta (${storeName}): "${u.rawText || 'sin texto'}"`
+        )
         .join('\n');
 
       const searchResponse = await ai.models.generateContent({
         model: 'gemini-4-hydrogen',
-        contents: `Busca estos códigos de barras EAN/UPC de productos vendidos en supermercados de Chile (${storeName}) y devuelve su nombre comercial limpio en español.
-Códigos:
+        contents: `Identifica el nombre comercial limpio en español de estos productos vendidos en supermercados de Chile (${storeName}, líder/jumbo/unimarc).
+Productos:
 ${listPrompt}
 
-Responde ÚNICAMENTE un arreglo JSON válido sin texto extra ni markdown, con este formato:
-[{"barcode":"7801965000974","resolvedName":"Salchicha Tradicional","brand":"opcional","found":true}]
-Si no encuentras con certeza el producto para un código, devuelve "found": false y deja resolvedName vacío.`,
+Responde ÚNICAMENTE un arreglo JSON válido sin markdown ni explicaciones, con este formato exacto:
+[{"id":"${unresolved[0].id}","barcode":"${unresolved[0].barcode}","resolvedName":"Salchicha Tradicional","brand":"Montina","found":true}]
+Si no encuentras con certeza el producto, devuelve "found": false y deja resolvedName vacío.`,
         config: {
           tools: [{ googleSearch: {} }],
+          thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
         },
       });
 
@@ -212,6 +226,7 @@ Si no encuentras con certeza el producto para un código, devuelve "found": fals
       const jsonMatch = rawText.match(/\[[\s\S]*\]/);
       if (jsonMatch) {
         const parsed = JSON.parse(jsonMatch[0]) as Array<{
+          id?: string;
           barcode?: string;
           resolvedName?: string;
           brand?: string;
@@ -224,14 +239,17 @@ Si no encuentras con certeza el producto para un código, devuelve "found": fals
         if (Array.isArray(parsed)) {
           for (const entry of parsed) {
             const code = String(entry?.barcode || '').replace(/\D/g, '');
+            const id = typeof entry?.id === 'string' && entry.id ? entry.id : code;
             const name = typeof entry?.resolvedName === 'string' ? entry.resolvedName.trim() : '';
-            if (code && name && entry?.found !== false && !results[code]) {
-              results[code] = {
+            if (name && entry?.found !== false) {
+              const resolvedEntry = {
                 resolvedName: name.slice(0, 80),
                 brand: typeof entry?.brand === 'string' ? entry.brand.trim() || undefined : undefined,
                 source: 'Búsqueda web',
                 sourceUrl: firstChunkUri || undefined,
               };
+              if (code && !results[code]) results[code] = resolvedEntry;
+              if (id && !queryResults[id]) queryResults[id] = resolvedEntry;
             }
           }
         }
@@ -241,7 +259,7 @@ Si no encuentras con certeza el producto para un código, devuelve "found": fals
     }
   }
 
-  return res.json({ results });
+  return res.json({ results, queryResults });
 });
 
 app.get('/api/vapid-public-key', (_req, res) => {

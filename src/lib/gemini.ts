@@ -1,4 +1,4 @@
-import { Type } from "@google/genai";
+import { ThinkingLevel, Type } from "@google/genai";
 import { auth } from "./firebaseUtils";
 
 export async function generateAIContent(request: Record<string, any>): Promise<{ text: string }> {
@@ -63,7 +63,7 @@ export interface BarcodeLookupResult {
 }
 
 export async function lookupBarcodes(
-  items: Array<{ barcode: string; rawText?: string }>,
+  items: Array<{ id?: string; barcode?: string; rawText?: string }>,
   storeName?: string
 ): Promise<Record<string, BarcodeLookupResult>> {
   const user = auth.currentUser;
@@ -78,10 +78,21 @@ export async function lookupBarcodes(
     });
     if (!response.ok) return {};
     const parsed = await response.json();
-    return parsed?.results && typeof parsed.results === 'object' ? parsed.results : {};
+    const byBarcode = parsed?.results && typeof parsed.results === 'object' ? parsed.results : {};
+    const byQuery = parsed?.queryResults && typeof parsed.queryResults === 'object' ? parsed.queryResults : {};
+    return { ...byQuery, ...byBarcode };
   } catch {
     return {};
   }
+}
+
+export async function lookupProductEntry(
+  input: { id?: string; barcode?: string; rawText: string },
+  storeName?: string
+): Promise<BarcodeLookupResult | null> {
+  const key = input.barcode || input.id || input.rawText;
+  const map = await lookupBarcodes([{ id: key, barcode: input.barcode, rawText: input.rawText }], storeName);
+  return (input.barcode && map[input.barcode]) || map[key] || null;
 }
 
 export interface ItemInfo {
@@ -272,94 +283,23 @@ const prompt = `Busca en internet el precio actual real (en pesos chilenos - CLP
     }
   ]`;
 
-  try {
-    const response = await generateAIContent({
-      model: "gemini-4-hydrogen",
-      contents: prompt,
-      config: {
-        tools: [{ googleSearch: {} }],
-        responseMimeType: "application/json",
-        responseSchema: {
-          type: Type.ARRAY,
-          items: {
-            type: Type.OBJECT,
-            properties: {
-              name: { type: Type.STRING },
-              lider: {
-                type: Type.OBJECT,
-                properties: {
-                  price: { type: Type.NUMBER },
-                  matchName: { type: Type.STRING },
-                  brand: { type: Type.STRING },
-                  url: { type: Type.STRING }
-                },
-                required: ["price"]
-              },
-              jumbo: {
-                type: Type.OBJECT,
-                properties: {
-                  price: { type: Type.NUMBER },
-                  matchName: { type: Type.STRING },
-                  brand: { type: Type.STRING },
-                  url: { type: Type.STRING }
-                },
-                required: ["price"]
-              },
-              unimarc: {
-                type: Type.OBJECT,
-                properties: {
-                  price: { type: Type.NUMBER },
-                  matchName: { type: Type.STRING },
-                  brand: { type: Type.STRING },
-                  url: { type: Type.STRING }
-                },
-                required: ["price"]
-              }
-            },
-            required: ["name", "lider", "jumbo", "unimarc"]
-          }
-        }
-      }
-    });
+  const response = await generateAIContent({
+    model: "gemini-4-hydrogen",
+    contents: `${prompt}\n\nResponde ÚNICAMENTE con un arreglo JSON válido sin texto extra ni markdown.`,
+    config: {
+      tools: [{ googleSearch: {} }],
+      thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+    }
+  });
 
-    const text = response.text || '[]';
-    return JSON.parse(text) as SupermarketPrice[];
-  } catch (error) {
-    console.error("Error searching market prices with Gemini Search:", error);
-    // Generación de fallback local realista con el rango de precios chilenos típico e información de productos
-    const brands = ["Colun", "Soprole", "Nestlé", "Carozzi", "Lucchetti", "Cuisine & Co", "Lider", "Great Value", "Hellmanns", "Tucapel"];
-    return itemNames.map(name => {
-      const basePrice = Math.floor(Math.random() * 4500) + 900; // 900 - 5400 CLP
-      const pLider = Math.round(basePrice * 0.94);
-      const pJumbo = Math.round(basePrice * 1.04);
-      const pUnimarc = Math.round(basePrice * 0.99);
-      const bSelected1 = brands[Math.floor(Math.random() * brands.length)];
-      const bSelected2 = brands[Math.floor(Math.random() * brands.length)];
-      const bSelected3 = brands[Math.floor(Math.random() * brands.length)];
-
-      return {
-        name,
-        lider: { 
-          price: pLider, 
-          matchName: `${name} ${bSelected1} Formato Familiar`,
-          brand: bSelected1,
-          url: `https://www.lider.cl/supermercado/search?query=${encodeURIComponent(name)}` 
-        },
-        jumbo: { 
-          price: pJumbo, 
-          matchName: `${name} ${bSelected2} Selección Premium`,
-          brand: bSelected2,
-          url: `https://www.jumbo.cl/busca?ft=${encodeURIComponent(name)}` 
-        },
-        unimarc: { 
-          price: pUnimarc, 
-          matchName: `${name} ${bSelected3} Formato Conveniente`,
-          brand: bSelected3,
-          url: `https://www.unimarc.cl/search?q=${encodeURIComponent(name)}` 
-        }
-      };
-    });
-  }
+  const cleaned = (response.text || '[]')
+    .replace(/^```json\s*/i, '')
+    .replace(/^```\s*/i, '')
+    .replace(/\s*```$/i, '')
+    .trim();
+  const arrayMatch = cleaned.match(/\[[\s\S]*\]/);
+  const parsed = JSON.parse(arrayMatch ? arrayMatch[0] : '[]');
+  return Array.isArray(parsed) ? (parsed as SupermarketPrice[]) : [];
 }
 
 export interface ReceiptScanItem {

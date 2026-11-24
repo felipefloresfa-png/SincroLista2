@@ -22,10 +22,11 @@ interface ReceiptReviewModalProps {
   initialStoreName: string;
   initialTotalCost: number;
   initialItems: ReviewableReceiptItem[];
+  scanSummary?: string | null;
   onClose: () => void;
   onRescanFile?: (file: File) => Promise<void>;
   isRescanning?: boolean;
-  onLookupItemBarcode?: (barcode: string, rawName: string, storeName: string) => Promise<{
+  onLookupItem?: (item: { id: string; barcode?: string; name: string }, storeName: string) => Promise<{
     resolvedName: string;
     source: string;
     sourceUrl?: string;
@@ -50,10 +51,11 @@ export function ReceiptReviewModal({
   initialStoreName,
   initialTotalCost,
   initialItems,
+  scanSummary = null,
   onClose,
   onRescanFile,
   isRescanning = false,
-  onLookupItemBarcode,
+  onLookupItem,
   onSave,
 }: ReceiptReviewModalProps) {
   const [storeName, setStoreName] = useState(initialStoreName);
@@ -62,6 +64,7 @@ export function ReceiptReviewModal({
   const [newItemName, setNewItemName] = useState('');
   const [newItemPrice, setNewItemPrice] = useState('');
   const [lookingUpId, setLookingUpId] = useState<string | null>(null);
+  const [actionSummary, setActionSummary] = useState<string | null>(scanSummary);
   const [isSaving, setIsSaving] = useState(false);
 
   useEffect(() => {
@@ -71,7 +74,8 @@ export function ReceiptReviewModal({
     setItems(initialItems);
     setNewItemName('');
     setNewItemPrice('');
-  }, [isOpen, initialStoreName, initialTotalCost, initialItems]);
+    setActionSummary(scanSummary || null);
+  }, [isOpen, initialStoreName, initialTotalCost, initialItems, scanSummary]);
 
   const nonProductCount = useMemo(
     () => items.filter((it) => it.selected && isReceiptNonProductLine(it.name, it.price)).length,
@@ -110,9 +114,13 @@ export function ReceiptReviewModal({
   };
 
   const handleRemoveNonProducts = () => {
+    const removed = items.filter((it) => isReceiptNonProductLine(it.name, it.price)).length;
     setItems((prev) =>
       prev.filter((it) => !isReceiptNonProductLine(it.name, it.price))
     );
+    if (removed > 0) {
+      setActionSummary(`Se quitaron ${removed} ${removed === 1 ? 'línea de descuento/total' : 'líneas de descuento/totales'}.`);
+    }
   };
 
   const handleAddManualItem = () => {
@@ -234,11 +242,18 @@ export function ReceiptReviewModal({
             </label>
           </div>
 
-          {/* Banner de análisis en curso */}
+          {/* Banner de análisis en curso o resumen de cambios */}
           {isRescanning && (
             <div className="flex items-center gap-3 bg-accent/10 border border-accent/20 rounded-2xl px-4 py-3 text-xs font-semibold text-accent">
               <Loader2 className="w-4 h-4 animate-spin shrink-0" />
               <span>Leyendo la foto de la boleta y verificando códigos...</span>
+            </div>
+          )}
+
+          {!isRescanning && actionSummary && (
+            <div className="flex items-start gap-2.5 bg-emerald-50 border border-emerald-200 rounded-2xl px-4 py-3 text-xs font-semibold text-emerald-800">
+              <Check className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
+              <span>{actionSummary}</span>
             </div>
           )}
 
@@ -383,7 +398,7 @@ export function ReceiptReviewModal({
                         onChange={(e) => handleUpdateField(item.id, 'name', e.target.value)}
                         className="w-full text-sm font-medium text-text-main bg-transparent outline-none focus:underline"
                       />
-                      {(isDiscount || !item.inOriginalList || item.barcode || item.barcodeSource) && (
+                      {(isDiscount || !item.inOriginalList || item.barcode || item.barcodeSource || item.ambiguous) && (
                         <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px]">
                           {isDiscount && (
                             <span className="text-amber-700">Línea de descuento/boleta</span>
@@ -396,17 +411,20 @@ export function ReceiptReviewModal({
                               Verificado ({item.barcodeSource}{item.barcode ? ` · ${item.barcode}` : ''})
                             </span>
                           )}
-                          {item.barcode && !item.barcodeSource && (
+                          {!isDiscount && !item.barcodeSource && (item.barcode || item.ambiguous || !item.inOriginalList) && (
                             <span className="text-text-secondary inline-flex items-center gap-1.5">
-                              <span className="tabular-nums">Cód. {item.barcode}</span>
-                              {onLookupItemBarcode && (
+                              {item.barcode && <span className="tabular-nums">Cód. {item.barcode}</span>}
+                              {onLookupItem && (
                                 <button
                                   type="button"
                                   disabled={lookingUpId === item.id}
                                   onClick={async () => {
                                     setLookingUpId(item.id);
                                     try {
-                                      const found = await onLookupItemBarcode(item.barcode!, item.name, storeName);
+                                      const found = await onLookupItem(
+                                        { id: item.id, barcode: item.barcode, name: item.name },
+                                        storeName
+                                      );
                                       if (found?.resolvedName) {
                                         setItems((prev) =>
                                           prev.map((curr) =>
@@ -421,6 +439,9 @@ export function ReceiptReviewModal({
                                               : curr
                                           )
                                         );
+                                        setActionSummary(
+                                          `Identificado: "${item.name}" → "${found.resolvedName}" (${found.source})`
+                                        );
                                       }
                                     } finally {
                                       setLookingUpId(null);
@@ -428,7 +449,11 @@ export function ReceiptReviewModal({
                                   }}
                                   className="text-accent hover:underline font-semibold cursor-pointer disabled:opacity-50"
                                 >
-                                  {lookingUpId === item.id ? 'Buscando...' : 'Buscar código'}
+                                  {lookingUpId === item.id
+                                    ? 'Buscando...'
+                                    : item.barcode
+                                      ? 'Buscar código'
+                                      : 'Buscar producto'}
                                 </button>
                               )}
                             </span>
