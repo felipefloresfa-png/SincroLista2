@@ -125,9 +125,16 @@ import {
   deduplicateItemList, 
   normalizeItemKey 
 } from './lib/itemNormalizer';
-import { analyzeItem, getSmartRecommendations, parseVoiceInput, ItemInfo, ParsedVoiceItem, searchMarketPrices, SupermarketPrice, generateAIContent } from './lib/gemini';
+import { analyzeItem, getSmartRecommendations, parseVoiceInput, ItemInfo, ParsedVoiceItem, searchMarketPrices, SupermarketPrice, generateAIContent, lookupBarcodes } from './lib/gemini';
 import { PantryScannerModal } from './components/PantryScannerModal';
+import { ReceiptReviewModal } from './components/ReceiptReviewModal';
 import { PantryView } from './components/PantryView';
+import {
+  annotateItemsAgainstOriginal,
+  applyBarcodeLookups,
+  normalizeReceiptItems,
+  type ReviewableReceiptItem,
+} from './lib/receiptParser';
 import {
   buildPantryCatalog,
   buildUnifiedChecklistSuggestions,
@@ -219,7 +226,8 @@ const fileToGenerativePart = async (file: File) => {
   // Reducir las fotos antes de enviarlas para respetar el límite del endpoint serverless.
   try {
     const bitmap = await createImageBitmap(file);
-    const scale = Math.min(1, 1600 / Math.max(bitmap.width, bitmap.height));
+    // Mantener nitidez horizontal en boletas largas verticales (hasta 1600px de ancho)
+    const scale = Math.min(1, 1600 / bitmap.width, 4096 / bitmap.height);
     const canvas = document.createElement('canvas');
     canvas.width = Math.round(bitmap.width * scale);
     canvas.height = Math.round(bitmap.height * scale);
@@ -228,7 +236,7 @@ const fileToGenerativePart = async (file: File) => {
     context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
     bitmap.close();
     const compressed = await new Promise<Blob>((resolve, reject) => {
-      canvas.toBlob(blob => blob ? resolve(blob) : reject(new Error('No se pudo comprimir la imagen.')), 'image/jpeg', 0.82);
+      canvas.toBlob(blob => blob ? resolve(blob) : reject(new Error('No se pudo comprimir la imagen.')), 'image/jpeg', 0.9);
     });
     const data = await new Promise<string>((resolve, reject) => {
       const reader = new FileReader();
@@ -248,10 +256,26 @@ const fileToGenerativePart = async (file: File) => {
   }
 };
 
-const processReceipt = async (imageFile: File) => {
+const processReceipt = async (imageFile: File, originalItemNames: string[] = []) => {
   try {
     const imagePart = await fileToGenerativePart(imageFile);
-    const prompt = "Analiza la boleta chilena adjunta. Extrae el MONTO TOTAL, la FECHA, el NOMBRE DEL COMERCIO y la LISTA DE PRODUCTOS detallada. Para cada producto extrae el nombre limpio y legible (sin abreviaturas crípticas si es reconocible), la cantidad y el precio unitario. Responde estrictamente en JSON: {'total': number, 'comercio': 'string', 'fecha': 'ISOString', 'items': [{'nombre': 'string', 'cantidad': number, 'precio': number}], 'error': null}. Si no es una boleta legible, responde {'error': 'invalido'}.";
+    const referenceContext = originalItemNames.length > 0
+      ? `\nLista previa del usuario (úsalos SOLO para desambiguar abreviaturas reales visibles en el papel, NUNCA agregues productos de esta lista si no aparecen impresos en la boleta): ${originalItemNames.slice(0, 60).join(', ')}.`
+      : '';
+    const prompt = `Analiza cuidadosamente esta boleta chilena línea por línea.
+Extrae:
+- total: monto final pagado en número entero CLP.
+- comercio: nombre del supermercado o tienda.
+- fecha: fecha en formato ISO si es legible.
+- items: SOLO productos reales comprados ({ nombre, cantidad, precio, codigo, ambiguo }).
+
+REGLAS ESTRICTAS:
+1. NO incluyas líneas de DESCUENTO, DCTO, DSCTO, AHORRO, REBAJA, PROMO, "RF Precio Antes Ahora", "RF Lleve N x $", SUBTOTAL, TOTAL, TOTAL AFECTO, TOTAL EXENTO, TOTAL IVA, VUELTO, REDONDEO, TAR CREDITO, MI CLUB ni montos negativos como productos. Si debajo de un producto aparece un descuento o rebaja (ej. "RF Precio Antes Ahora -790" o "RF Lleve N x $ -840"), resta ese descuento al precio total de la línea del producto inmediatamente anterior y omite la línea del descuento.
+2. En líneas multi-unidad (ej. "6X690 NEC MANZ190C $ 4.140" con "RF Lleve N x $ -840" debajo), devuelve cantidad: 6 y precio: 3300 (el monto neto total pagado por esa línea después del descuento).
+3. Extrae en "codigo" los dígitos del código de barras EAN/UPC impresos junto o sobre el producto (ej. "7801965000974", "0400001087855") si son legibles, y marca "ambiguo": true cuando la descripción del papel esté muy abreviada o dudosa (ej. "SAL TRADICIO", "MAG VAINILLA", "PF LIMON", "NUGGETS I O", "LAYS TA", "TIRITA CARNE") para verificarla luego por su código. NO inventes ni adivines productos cuando el texto sea ambiguo: por ejemplo "SAL TRADICIO $4.590" NO es sal de mesa.
+4. Para productos pesados por kilo (ej. "HALLULLA C $598 / x 0.286 KG"), usa cantidad: 1 y precio: 598 (el valor real pagado de la línea, nunca el precio por kilo).${referenceContext}
+
+Responde estrictamente en JSON: {'total': number, 'comercio': 'string', 'fecha': 'ISOString', 'items': [{'nombre': 'string', 'cantidad': number, 'precio': number, 'codigo': 'string', 'ambiguo': boolean}], 'error': null}. Si no es una boleta legible, responde {'error': 'invalido'}.`;
 
     const response = await generateAIContent({
       model: "gemini-3-flash-preview",
@@ -271,7 +295,9 @@ const processReceipt = async (imageFile: File) => {
                 properties: {
                   nombre: { type: Type.STRING },
                   cantidad: { type: Type.NUMBER },
-                  precio: { type: Type.NUMBER }
+                  precio: { type: Type.NUMBER },
+                  codigo: { type: Type.STRING },
+                  ambiguo: { type: Type.BOOLEAN }
                 }
               }
             },
@@ -722,15 +748,30 @@ export default function App() {
   };
   const fileInputRef = useRef<HTMLInputElement>(null);
   const scanningTargetIdRef = useRef<string | null>(null);
+  const [receiptReview, setReceiptReview] = useState<{
+    isOpen: boolean;
+    mode: 'scan_review' | 'history_edit';
+    targetId: string | null;
+    storeName: string;
+    totalCost: number;
+    receiptDate?: Date | null;
+    items: ReviewableReceiptItem[];
+  } | null>(null);
 
   const handleScanReceipt = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file || !profile?.familyId || !db) return;
 
     const targetId = scanningTargetIdRef.current ?? scanningTargetId;
+    const targetEntry = targetId ? history.find(h => h.id === targetId) : null;
+    const originalItems = Array.isArray(targetEntry?.items) ? targetEntry.items : [];
+    const originalNames = originalItems
+      .map((it: any) => (typeof it === 'string' ? it : it?.name))
+      .filter(Boolean);
+
     setIsScanning(true);
     try {
-      const data = await processReceipt(file);
+      const data = await processReceipt(file, originalNames);
       
       if (data.error) {
         addNotification(data.errorMessage || "No se pudo leer la boleta. Intenta con una foto más clara.", "error");
@@ -738,76 +779,49 @@ export default function App() {
       }
 
       const rawItems = Array.isArray(data.items) ? data.items : [];
-      const scannedItems = rawItems
-        .filter((item: any) => item && (item.nombre || item.name))
-        .map((item: any) => {
-          const rawName = String(item.nombre || item.name || '').trim();
-          const canonical = getCanonicalItem(rawName);
-          const numericQty = Number(item.cantidad ?? item.quantity);
-          const qtyStr =
-            Number.isFinite(numericQty) && numericQty > 0
-              ? String(Math.round(numericQty * 10) / 10)
-              : '1';
-          const numericPrice = Number(item.precio ?? item.price);
-          return {
-            name: canonical.name || rawName || 'Producto',
-            category: canonical.category || 'Otros',
-            quantity: qtyStr,
-            price: Number.isFinite(numericPrice) && numericPrice > 0 ? Math.round(numericPrice) : 0,
-            scanned: true
-          };
-        });
-
-      const itemsSum = scannedItems.reduce(
-        (acc: number, it: { price: number; quantity: string }) =>
-          acc + (it.price || 0) * (parseFloat(it.quantity) || 1),
+      const cleanedItems = normalizeReceiptItems(rawItems);
+      const itemsSum = cleanedItems.reduce(
+        (acc, it) => acc + (it.price || 0),
         0
       );
       const parsedTotal = Number(data.total);
       const safeTotalCost =
         Number.isFinite(parsedTotal) && parsedTotal > 0 ? Math.round(parsedTotal) : Math.round(itemsSum);
 
-      if (scannedItems.length === 0 && safeTotalCost <= 0) {
+      if (cleanedItems.length === 0 && safeTotalCost <= 0) {
         addNotification("No se detectaron productos ni monto total en la boleta. Intenta con otra foto.", "error");
         return;
       }
 
-      if (targetId) {
-        const targetEntry = history.find(h => h.id === targetId);
-        const originalItems = Array.isArray(targetEntry?.items) ? targetEntry.items : [];
-        const safeStoreName =
-          String(data.comercio || targetEntry?.storeName || 'Comercio desconocido')
-            .trim()
-            .slice(0, 100) || 'Comercio desconocido';
-        const nextItems = scannedItems.length > 0 ? scannedItems : originalItems;
+      const safeStoreName =
+        String(data.comercio || targetEntry?.storeName || 'Supermercado')
+          .trim()
+          .slice(0, 100) || 'Supermercado';
+      const parsedDate = data.fecha ? new Date(data.fecha) : null;
+      const validDate = parsedDate && !Number.isNaN(parsedDate.getTime()) ? parsedDate : null;
 
-        await updateDoc(doc(db, 'history', targetId), sanitizeForFirestore({
-          totalCost: safeTotalCost,
-          storeName: safeStoreName,
-          items: nextItems,
-          totalItems: nextItems.length,
-          receiptLinked: true
-        }));
-        addNotification("¡Boleta vinculada y productos actualizados!", "success");
-      } else if (historyCollection) {
-        const safeStoreName =
-          String(data.comercio || 'Comercio desconocido')
-            .trim()
-            .slice(0, 100) || 'Comercio desconocido';
-        const parsedDate = data.fecha ? new Date(data.fecha) : null;
-        const validDate = parsedDate && !Number.isNaN(parsedDate.getTime()) ? parsedDate : null;
+      let resolvedItems = cleanedItems;
+      const barcodeCandidates = resolvedItems
+        .filter((it) => it.barcode && it.ambiguous)
+        .map((it) => ({ barcode: it.barcode!, rawText: it.name }));
 
-        await addDoc(historyCollection, sanitizeForFirestore({
-          familyId: profile.familyId,
-          totalCost: safeTotalCost,
-          storeName: safeStoreName,
-          timestamp: validDate || serverTimestamp(),
-          items: scannedItems,
-          totalItems: scannedItems.length,
-          receiptLinked: true
-        }));
-        addNotification(`¡Boleta guardada con ${scannedItems.length} productos!`, "success");
+      if (barcodeCandidates.length > 0) {
+        const lookupMap = await lookupBarcodes(barcodeCandidates, safeStoreName);
+        resolvedItems = applyBarcodeLookups(resolvedItems, lookupMap);
       }
+
+      const baseItems = resolvedItems.length > 0 ? resolvedItems : originalItems;
+      const reviewItems = annotateItemsAgainstOriginal(baseItems, originalItems);
+
+      setReceiptReview({
+        isOpen: true,
+        mode: 'scan_review',
+        targetId,
+        storeName: safeStoreName,
+        totalCost: safeTotalCost,
+        receiptDate: validDate,
+        items: reviewItems,
+      });
     } catch (err: any) {
       console.error("Error al vincular boleta:", err);
       addNotification(err?.message || "Error al procesar la boleta", "error");
@@ -817,6 +831,81 @@ export default function App() {
       setScanningTargetId(null);
       if (fileInputRef.current) fileInputRef.current.value = '';
     }
+  };
+
+  const handleOpenHistoryEdit = (entry: any) => {
+    if (!entry) return;
+    const rawItems = Array.isArray(entry.items) ? entry.items : [];
+    const normalizedForEdit = rawItems
+      .filter((it: any) => it && (typeof it === 'string' || it.name))
+      .map((it: any) => {
+        if (typeof it === 'string') {
+          return { name: it, category: 'Otros', quantity: '1', price: 0, scanned: false };
+        }
+        return {
+          name: String(it.name || '').trim(),
+          category: it.category || 'Otros',
+          quantity: String(it.quantity || '1'),
+          price: Number(it.price) > 0 ? Math.round(Number(it.price)) : 0,
+          scanned: Boolean(it.scanned),
+          ...(it.barcode ? { barcode: String(it.barcode) } : {}),
+        };
+      });
+
+    setReceiptReview({
+      isOpen: true,
+      mode: 'history_edit',
+      targetId: entry.id,
+      storeName: String(entry.storeName || 'Supermercado').slice(0, 100),
+      totalCost: Number(entry.totalCost) > 0 ? Math.round(Number(entry.totalCost)) : 0,
+      receiptDate: null,
+      items: annotateItemsAgainstOriginal(normalizedForEdit, []),
+    });
+  };
+
+  const handleSaveReceiptReview = async (payload: {
+    storeName: string;
+    totalCost: number;
+    items: Array<{ name: string; category: string; quantity: string; price: number; scanned?: boolean }>;
+  }) => {
+    if (!receiptReview || !profile?.familyId || !db) return;
+    const safeStoreName = payload.storeName.trim().slice(0, 100) || 'Supermercado';
+    const safeTotalCost = Math.max(0, Math.round(Number(payload.totalCost) || 0));
+
+    if (receiptReview.targetId) {
+      await updateDoc(
+        doc(db, 'history', receiptReview.targetId),
+        sanitizeForFirestore({
+          storeName: safeStoreName,
+          totalCost: safeTotalCost,
+          items: payload.items,
+          totalItems: payload.items.length,
+          receiptLinked: true,
+        })
+      );
+      addNotification(
+        receiptReview.mode === 'scan_review'
+          ? '¡Boleta vinculada y revisada correctamente!'
+          : 'Compra actualizada en el historial',
+        'success'
+      );
+    } else if (historyCollection) {
+      await addDoc(
+        historyCollection,
+        sanitizeForFirestore({
+          familyId: profile.familyId,
+          storeName: safeStoreName,
+          totalCost: safeTotalCost,
+          timestamp: receiptReview.receiptDate || serverTimestamp(),
+          items: payload.items,
+          totalItems: payload.items.length,
+          receiptLinked: true,
+        })
+      );
+      addNotification(`¡Boleta guardada con ${payload.items.length} productos!`, 'success');
+    }
+
+    setReceiptReview(null);
   };
   const [recommendations, setRecommendations] = useState<string[]>([]);
   const [isAdding, setIsAdding] = useState(false);
@@ -2929,6 +3018,7 @@ export default function App() {
               }}
               isScanning={isScanning}
               scanningTargetId={scanningTargetId}
+              onEditEntry={handleOpenHistoryEdit}
               onDeleteHistoryEntry={(entryId) => {
                 setPromptConfig({
                   isOpen: true,
@@ -3851,6 +3941,46 @@ export default function App() {
         className="hidden"
         aria-hidden="true"
       />
+
+      {/* Modal de revisión/edición de boleta antes de guardar */}
+      {receiptReview && (
+        <ReceiptReviewModal
+          isOpen={receiptReview.isOpen}
+          mode={receiptReview.mode}
+          initialStoreName={receiptReview.storeName}
+          initialTotalCost={receiptReview.totalCost}
+          initialItems={receiptReview.items}
+          onClose={() => setReceiptReview(null)}
+          onRescanPhoto={
+            receiptReview.targetId
+              ? () => {
+                  const targetId = receiptReview.targetId;
+                  setReceiptReview(null);
+                  scanningTargetIdRef.current = targetId;
+                  setScanningTargetId(targetId);
+                  if (fileInputRef.current) {
+                    fileInputRef.current.value = '';
+                    fileInputRef.current.click();
+                  }
+                }
+              : undefined
+          }
+          onLookupItemBarcode={async (barcode, rawName, storeName) => {
+            const res = await lookupBarcodes([{ barcode, rawText: rawName }], storeName);
+            const match = res[barcode];
+            if (!match?.resolvedName) {
+              addNotification(`No se encontró un producto exacto para el código ${barcode}`, 'info');
+              return null;
+            }
+            return {
+              resolvedName: match.resolvedName,
+              source: match.source,
+              sourceUrl: match.sourceUrl,
+            };
+          }}
+          onSave={handleSaveReceiptReview}
+        />
+      )}
 
       {/* Pantry Photo Scanner Modal */}
       <PantryScannerModal
@@ -5138,7 +5268,7 @@ function StatsDashboard({ onOpenMenu, history }: { onOpenMenu: () => void, histo
   );
 }
 
-function PurchaseHistoryView({ onOpenMenu, profile, onAddItem, onRepeatPurchase, currentItems, history, loading, onScanClick, isScanning, scanningTargetId, onDeleteHistoryEntry }: { 
+function PurchaseHistoryView({ onOpenMenu, profile, onAddItem, onRepeatPurchase, currentItems, history, loading, onScanClick, isScanning, scanningTargetId, onEditEntry, onDeleteHistoryEntry }: { 
   onOpenMenu: () => void, 
   profile: UserProfile,
   currentItems: GroceryItem[],
@@ -5149,6 +5279,7 @@ function PurchaseHistoryView({ onOpenMenu, profile, onAddItem, onRepeatPurchase,
   onScanClick: (id?: string) => void,
   isScanning: boolean,
   scanningTargetId: string | null,
+  onEditEntry: (entry: any) => void,
   onDeleteHistoryEntry: (id: string) => void
 }) {
   // Helper to check if an item is already in the current list
@@ -5273,6 +5404,14 @@ function PurchaseHistoryView({ onOpenMenu, profile, onAddItem, onRepeatPurchase,
                       >
                         <RefreshCw className="w-3.5 h-3.5" />
                         Repetir Compra
+                      </button>
+
+                      <button
+                        onClick={() => onEditEntry(entry)}
+                        className="w-full sm:w-auto flex items-center justify-center gap-2 px-4 py-2 bg-gray-100 text-text-main rounded-xl text-[10px] font-black uppercase tracking-wider hover:bg-gray-200 transition-all active:scale-95 cursor-pointer"
+                      >
+                        <Pencil className="w-3.5 h-3.5" />
+                        Editar / Corregir
                       </button>
 
                       <button

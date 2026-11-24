@@ -93,6 +93,135 @@ app.post('/api/gemini', async (req, res) => {
   }
 });
 
+app.post('/api/lookup-barcodes', async (req, res) => {
+  if (!(await verifyFirebaseToken(req))) {
+    return res.status(401).json({ error: 'Se requiere una sesión válida.' });
+  }
+
+  const rawItems = Array.isArray(req.body?.items) ? req.body.items : [];
+  const storeName = typeof req.body?.storeName === 'string' ? req.body.storeName.trim().slice(0, 60) : 'Lider Chile';
+  const candidates = rawItems
+    .map((it: any) => ({
+      barcode: String(it?.barcode || '').replace(/\D/g, ''),
+      rawText: typeof it?.rawText === 'string' ? it.rawText.trim().slice(0, 80) : '',
+    }))
+    .filter((it: { barcode: string }) => /^\d{8,14}$/.test(it.barcode) && !/^2\d{12}$/.test(it.barcode))
+    .slice(0, 12);
+
+  if (candidates.length === 0) {
+    return res.json({ results: {} });
+  }
+
+  const results: Record<string, { resolvedName: string; brand?: string; source: string; sourceUrl?: string }> = {};
+  const unresolved: Array<{ barcode: string; rawText: string }> = [];
+
+  // 1. Consulta rápida en Open Food Facts
+  await Promise.all(
+    candidates.map(async ({ barcode, rawText }) => {
+      try {
+        const resp = await fetch(
+          `https://world.openfoodfacts.org/api/v2/product/${barcode}.json?fields=product_name,product_name_es,brands,quantity`,
+          { signal: AbortSignal.timeout(2500) }
+        );
+        if (resp.ok) {
+          const data = (await resp.json()) as {
+            status?: number;
+            product?: { product_name_es?: string; product_name?: string; brands?: string; quantity?: string };
+          };
+          const p = data?.product;
+          const rawName = (p?.product_name_es || p?.product_name || '').trim();
+          if (data?.status === 1 && rawName) {
+            const brand = (p?.brands || '').split(',')[0].trim();
+            const fullName = brand && !rawName.toLowerCase().includes(brand.toLowerCase())
+              ? `${rawName} ${brand}`.trim()
+              : rawName;
+            results[barcode] = {
+              resolvedName: fullName.slice(0, 80),
+              brand: brand || undefined,
+              source: 'OpenFoodFacts',
+              sourceUrl: `https://world.openfoodfacts.org/product/${barcode}`,
+            };
+            return;
+          }
+        }
+      } catch {
+        // Continuar al fallback de búsqueda web
+      }
+      unresolved.push({ barcode, rawText });
+    })
+  );
+
+  // 2. Fallback con Google Search Grounding (Gemini 4 Hydrogen) para códigos chilenos no listados en OpenFoodFacts
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (unresolved.length > 0 && apiKey) {
+    try {
+      const ai = new GoogleGenAI({
+        apiKey,
+        apiVersion: 'v1beta',
+        httpOptions: {
+          headers: {
+            'User-Agent': 'aistudio-build',
+          },
+        },
+      });
+      const listPrompt = unresolved
+        .map((u, i) => `${i + 1}. Código: ${u.barcode}${u.rawText ? ` (en boleta ${storeName}: "${u.rawText}")` : ''}`)
+        .join('\n');
+
+      const searchResponse = await ai.models.generateContent({
+        model: 'gemini-4-hydrogen',
+        contents: `Busca estos códigos de barras EAN/UPC de productos vendidos en supermercados de Chile (${storeName}) y devuelve su nombre comercial limpio en español.
+Códigos:
+${listPrompt}
+
+Responde ÚNICAMENTE un arreglo JSON válido sin texto extra ni markdown, con este formato:
+[{"barcode":"7801965000974","resolvedName":"Salchicha Tradicional","brand":"opcional","found":true}]
+Si no encuentras con certeza el producto para un código, devuelve "found": false y deja resolvedName vacío.`,
+        config: {
+          tools: [{ googleSearch: {} }],
+        },
+      });
+
+      const rawText = (searchResponse.text || '')
+        .replace(/^```json\s*/i, '')
+        .replace(/^```\s*/i, '')
+        .replace(/\s*```$/i, '')
+        .trim();
+      const jsonMatch = rawText.match(/\[[\s\S]*\]/);
+      if (jsonMatch) {
+        const parsed = JSON.parse(jsonMatch[0]) as Array<{
+          barcode?: string;
+          resolvedName?: string;
+          brand?: string;
+          found?: boolean;
+        }>;
+        const firstChunkUri = searchResponse.candidates?.[0]?.groundingMetadata?.groundingChunks?.find(
+          (c: any) => c?.web?.uri
+        )?.web?.uri;
+
+        if (Array.isArray(parsed)) {
+          for (const entry of parsed) {
+            const code = String(entry?.barcode || '').replace(/\D/g, '');
+            const name = typeof entry?.resolvedName === 'string' ? entry.resolvedName.trim() : '';
+            if (code && name && entry?.found !== false && !results[code]) {
+              results[code] = {
+                resolvedName: name.slice(0, 80),
+                brand: typeof entry?.brand === 'string' ? entry.brand.trim() || undefined : undefined,
+                source: 'Búsqueda web',
+                sourceUrl: firstChunkUri || undefined,
+              };
+            }
+          }
+        }
+      }
+    } catch (searchErr: any) {
+      console.warn('[BarcodeLookup] Búsqueda web omitida:', searchErr?.message || searchErr);
+    }
+  }
+
+  return res.json({ results });
+});
+
 app.get('/api/vapid-public-key', (_req, res) => {
   const keys = getVapidKeys();
   if (!keys) return res.status(500).json({ error: 'Web Push no está configurado.' });

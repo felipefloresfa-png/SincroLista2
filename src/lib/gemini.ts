@@ -37,6 +37,35 @@ export async function generateAIContent(request: Record<string, any>): Promise<{
   return parsedBody as { text: string };
 }
 
+export interface BarcodeLookupResult {
+  resolvedName: string;
+  brand?: string;
+  source: string;
+  sourceUrl?: string;
+}
+
+export async function lookupBarcodes(
+  items: Array<{ barcode: string; rawText?: string }>,
+  storeName?: string
+): Promise<Record<string, BarcodeLookupResult>> {
+  const user = auth.currentUser;
+  if (!user || !Array.isArray(items) || items.length === 0) return {};
+  try {
+    const idToken = await user.getIdToken();
+    const response = await fetch('/api/lookup-barcodes', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${idToken}` },
+      body: JSON.stringify({ items, storeName }),
+    });
+    if (!response.ok) return {};
+    const parsed = await response.json();
+    return parsed?.results && typeof parsed.results === 'object' ? parsed.results : {};
+  } catch {
+    return {};
+  }
+}
+
 export interface ItemInfo {
   correctedName?: string;
   category: string;
