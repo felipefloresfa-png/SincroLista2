@@ -244,14 +244,14 @@ const fileToGenerativePart = async (file: File) => {
       reader.onerror = () => reject(reader.error);
       reader.readAsDataURL(file);
     });
-    return { inlineData: { data, mimeType: file.type } };
+    return { inlineData: { data, mimeType: file.type || 'image/jpeg' } };
   }
 };
 
 const processReceipt = async (imageFile: File) => {
   try {
     const imagePart = await fileToGenerativePart(imageFile);
-    const prompt = "Analiza la boleta chilena adjunta. Extrae el MONTO TOTAL, la FECHA, el NOMBRE DEL COMERCIO y la LISTA DE PRODUCTOS detallada. Para cada producto extrae el nombre, la cantidad y el precio unitario. Responde estrictamente en JSON: {'total': number, 'comercio': 'string', 'fecha': 'ISOString', 'items': [{'nombre': 'string', 'cantidad': number, 'precio': number}], 'error': null}. Si no es una boleta, responde {'error': 'invalido'}.";
+    const prompt = "Analiza la boleta chilena adjunta. Extrae el MONTO TOTAL, la FECHA, el NOMBRE DEL COMERCIO y la LISTA DE PRODUCTOS detallada. Para cada producto extrae el nombre limpio y legible (sin abreviaturas crípticas si es reconocible), la cantidad y el precio unitario. Responde estrictamente en JSON: {'total': number, 'comercio': 'string', 'fecha': 'ISOString', 'items': [{'nombre': 'string', 'cantidad': number, 'precio': number}], 'error': null}. Si no es una boleta legible, responde {'error': 'invalido'}.";
 
     const response = await generateAIContent({
       model: "gemini-3-flash-preview",
@@ -281,11 +281,18 @@ const processReceipt = async (imageFile: File) => {
       }
     });
     
-    const text = response.text || "{}";
-    return JSON.parse(text);
-  } catch (error) {
+    const rawText = (response.text || "{}")
+      .replace(/^```json\s*/i, '')
+      .replace(/^```\s*/i, '')
+      .replace(/\s*```$/i, '')
+      .trim();
+    return JSON.parse(rawText || "{}");
+  } catch (error: any) {
     console.error("Receipt Processing Error:", error);
-    return { error: 'fallo_procesamiento' };
+    return {
+      error: 'fallo_procesamiento',
+      errorMessage: error?.message || 'Error al analizar la boleta con IA.'
+    };
   }
 };
 
@@ -714,59 +721,99 @@ export default function App() {
     }
   };
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const scanningTargetIdRef = useRef<string | null>(null);
 
   const handleScanReceipt = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (!file || !profile?.familyId) return;
+    if (!file || !profile?.familyId || !db) return;
 
+    const targetId = scanningTargetIdRef.current ?? scanningTargetId;
     setIsScanning(true);
     try {
       const data = await processReceipt(file);
       
       if (data.error) {
-        addNotification("No se pudo leer la boleta. Intenta manualmente.", "error");
-      } else {
-        const scannedItems = (data.items || []).map((item: any) => ({
-          name: item.nombre,
-          quantity: item.cantidad?.toString() || "1",
-          price: item.precio || 0,
-          scanned: true
-        }));
-
-        if (scanningTargetId) {
-          // Actualizamos una compra existente
-          const targetEntry = history.find(h => h.id === scanningTargetId);
-          const originalItems = targetEntry?.items || [];
-          
-          // Unimos items de la lista original con los escaneados (evitando duplicados por nombre si es posible)
-          // Pero lo más limpio es guardar los detalles de la boleta
-          await updateDoc(doc(db, 'history', scanningTargetId), {
-            totalCost: data.total || 0,
-            storeName: data.comercio || 'Comercio desconocido',
-            items: scannedItems.length > 0 ? scannedItems : originalItems,
-            totalItems: scannedItems.length > 0 ? scannedItems.length : originalItems.length,
-            isScanning: true
-          });
-          addNotification("¡Boleta vinculada y productos actualizados!", "success");
-        } else {
-          // Creamos una nueva entrada (gasto libre)
-          await addDoc(historyCollection, {
-            familyId: profile.familyId,
-            totalCost: data.total || 0,
-            storeName: data.comercio || 'Comercio desconocido',
-            timestamp: data.fecha ? new Date(data.fecha) : serverTimestamp(),
-            items: scannedItems, 
-            totalItems: scannedItems.length,
-            isScanning: true
-          });
-          addNotification("¡Boleta guardada con " + scannedItems.length + " productos!", "success");
-        }
+        addNotification(data.errorMessage || "No se pudo leer la boleta. Intenta con una foto más clara.", "error");
+        return;
       }
-    } catch (err) {
-      console.error(err);
-      addNotification("Error al procesar boleta", "error");
+
+      const rawItems = Array.isArray(data.items) ? data.items : [];
+      const scannedItems = rawItems
+        .filter((item: any) => item && (item.nombre || item.name))
+        .map((item: any) => {
+          const rawName = String(item.nombre || item.name || '').trim();
+          const canonical = getCanonicalItem(rawName);
+          const numericQty = Number(item.cantidad ?? item.quantity);
+          const qtyStr =
+            Number.isFinite(numericQty) && numericQty > 0
+              ? String(Math.round(numericQty * 10) / 10)
+              : '1';
+          const numericPrice = Number(item.precio ?? item.price);
+          return {
+            name: canonical.name || rawName || 'Producto',
+            category: canonical.category || 'Otros',
+            quantity: qtyStr,
+            price: Number.isFinite(numericPrice) && numericPrice > 0 ? Math.round(numericPrice) : 0,
+            scanned: true
+          };
+        });
+
+      const itemsSum = scannedItems.reduce(
+        (acc: number, it: { price: number; quantity: string }) =>
+          acc + (it.price || 0) * (parseFloat(it.quantity) || 1),
+        0
+      );
+      const parsedTotal = Number(data.total);
+      const safeTotalCost =
+        Number.isFinite(parsedTotal) && parsedTotal > 0 ? Math.round(parsedTotal) : Math.round(itemsSum);
+
+      if (scannedItems.length === 0 && safeTotalCost <= 0) {
+        addNotification("No se detectaron productos ni monto total en la boleta. Intenta con otra foto.", "error");
+        return;
+      }
+
+      if (targetId) {
+        const targetEntry = history.find(h => h.id === targetId);
+        const originalItems = Array.isArray(targetEntry?.items) ? targetEntry.items : [];
+        const safeStoreName =
+          String(data.comercio || targetEntry?.storeName || 'Comercio desconocido')
+            .trim()
+            .slice(0, 100) || 'Comercio desconocido';
+        const nextItems = scannedItems.length > 0 ? scannedItems : originalItems;
+
+        await updateDoc(doc(db, 'history', targetId), sanitizeForFirestore({
+          totalCost: safeTotalCost,
+          storeName: safeStoreName,
+          items: nextItems,
+          totalItems: nextItems.length,
+          receiptLinked: true
+        }));
+        addNotification("¡Boleta vinculada y productos actualizados!", "success");
+      } else if (historyCollection) {
+        const safeStoreName =
+          String(data.comercio || 'Comercio desconocido')
+            .trim()
+            .slice(0, 100) || 'Comercio desconocido';
+        const parsedDate = data.fecha ? new Date(data.fecha) : null;
+        const validDate = parsedDate && !Number.isNaN(parsedDate.getTime()) ? parsedDate : null;
+
+        await addDoc(historyCollection, sanitizeForFirestore({
+          familyId: profile.familyId,
+          totalCost: safeTotalCost,
+          storeName: safeStoreName,
+          timestamp: validDate || serverTimestamp(),
+          items: scannedItems,
+          totalItems: scannedItems.length,
+          receiptLinked: true
+        }));
+        addNotification(`¡Boleta guardada con ${scannedItems.length} productos!`, "success");
+      }
+    } catch (err: any) {
+      console.error("Error al vincular boleta:", err);
+      addNotification(err?.message || "Error al procesar la boleta", "error");
     } finally {
       setIsScanning(false);
+      scanningTargetIdRef.current = null;
       setScanningTargetId(null);
       if (fileInputRef.current) fileInputRef.current.value = '';
     }
@@ -2872,8 +2919,13 @@ export default function App() {
               history={history}
               loading={historyLoading}
               onScanClick={(id) => {
-                setScanningTargetId(id || null);
-                fileInputRef.current?.click();
+                const targetId = id || null;
+                scanningTargetIdRef.current = targetId;
+                setScanningTargetId(targetId);
+                if (fileInputRef.current) {
+                  fileInputRef.current.value = '';
+                  fileInputRef.current.click();
+                }
               }}
               isScanning={isScanning}
               scanningTargetId={scanningTargetId}
@@ -3789,6 +3841,16 @@ export default function App() {
           </motion.div>
         </div>
       )}
+
+      {/* Input oculto para escanear o vincular boletas desde el Historial */}
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept="image/*"
+        onChange={handleScanReceipt}
+        className="hidden"
+        aria-hidden="true"
+      />
 
       {/* Pantry Photo Scanner Modal */}
       <PantryScannerModal
@@ -5192,11 +5254,16 @@ function PurchaseHistoryView({ onOpenMenu, profile, onAddItem, onRepeatPurchase,
                           )}
                         >
                           {isScanning && scanningTargetId === entry.id ? (
-                            <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                            <>
+                              <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                              Leyendo boleta...
+                            </>
                           ) : (
-                            <Camera className="w-3.5 h-3.5" />
+                            <>
+                              <Camera className="w-3.5 h-3.5" />
+                              Vincular Boleta
+                            </>
                           )}
-                          Vincular Boleta
                         </button>
                       )}
 
