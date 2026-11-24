@@ -79,7 +79,7 @@ export async function analyzeItem(itemName: string): Promise<ItemInfo> {
 
   try {
     const response = await generateAIContent({
-      model: "gemini-3-flash-preview",
+      model: "gemini-4-hydrogen",
       contents: `Analiza este producto de supermercado: "${itemName}".
       Categorízalo en una de estas categorías estándar: 
       Frutas y Verduras, Carnes y Pescados, Lácteos y Huevos, Despensa, Panadería, Congelados, Bebidas, Alcohol, Higiene y Cuidado Personal, Limpieza del Hogar, Mascotas, Bebés, Otros.
@@ -132,7 +132,7 @@ try {
       Devuelve un array JSON de strings con solo los nombres de los productos.`;
 
     const response = await generateAIContent({
-      model: "gemini-3-flash-preview",
+      model: "gemini-4-hydrogen",
       contents: prompt,
       config: {
         responseMimeType: "application/json",
@@ -172,7 +172,7 @@ export async function parseVoiceInput(text: string): Promise<ParsedVoiceItem[]> 
 
 try {
     const response = await generateAIContent({
-      model: "gemini-3-flash-preview",
+      model: "gemini-4-hydrogen",
       contents: `Tu tarea es tomar un texto dictado por voz y convertirlo en una LISTA de productos individuales para el supermercado.
       
       TEXTO: "${text}"
@@ -256,7 +256,7 @@ const prompt = `Busca en internet el precio actual real (en pesos chilenos - CLP
 
   try {
     const response = await generateAIContent({
-      model: "gemini-3.5-flash",
+      model: "gemini-4-hydrogen",
       contents: prompt,
       config: {
         tools: [{ googleSearch: {} }],
@@ -457,7 +457,7 @@ Extrae en JSON:
 - items: Arreglo de productos: name (limpio y desabreviado), quantity (número), price (número), category ("Frutas y Verduras", "Carnes y Pescados", "Lácteos y Huevos", "Despensa", "Panadería", "Congelados", "Bebidas", "Limpieza del Hogar", "Higiene y Cuidado Personal", "Otros"), matchedActiveItem (si coincide con alguno de [${activeNames.join(', ')}]).`;
 
   const response = await generateAIContent({
-    model: 'gemini-3-flash-preview',
+    model: 'gemini-4-hydrogen',
     contents: [
       {
         inlineData: {
@@ -573,7 +573,7 @@ Devuelve un JSON con:
 - detectedItems: arreglo con { name, category, stockStatus, estimatedQuantity, notes }.`;
 
   const response = await generateAIContent({
-    model: 'gemini-3-flash-preview',
+    model: 'gemini-4-hydrogen',
     contents: {
       parts: [...imageParts, { text: prompt }],
     },

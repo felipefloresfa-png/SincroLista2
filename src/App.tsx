@@ -311,7 +311,7 @@ REGLAS ESTRICTAS:
 Responde estrictamente en JSON: {'total': number, 'comercio': 'string', 'fecha': 'ISOString', 'items': [{'nombre': 'string', 'cantidad': number, 'precio': number, 'codigo': 'string', 'ambiguo': boolean}], 'error': null}. Si no es una boleta legible, responde {'error': 'invalido'}.`;
 
     const response = await generateAIContent({
-      model: "gemini-3-flash-preview",
+      model: "gemini-4-hydrogen",
       contents: { parts: [{ text: prompt }, imagePart] },
       config: {
         responseMimeType: "application/json",
@@ -2371,7 +2371,7 @@ export default function App() {
       }
 
       const response = await generateAIContent({
-        model: "gemini-3-flash-preview",
+        model: "gemini-4-hydrogen",
         contents: `Fecha actual: ${new Date().toLocaleDateString('es-CL')}.
         Historial de compras: ${JSON.stringify(historyData)}. 
         Analiza patrones de frecuencia y cantidades exactas. 

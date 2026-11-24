@@ -58,39 +58,65 @@ app.post('/api/gemini', async (req, res) => {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) return res.status(500).json({ error: 'La IA no está configurada en el servidor.' });
   const { model, contents, config } = req.body || {};
-  const allowedModels = ['gemini-4-hydrogen', 'gemini-3-flash-preview', 'gemini-3.5-flash'];
+  const allowedModels = ['gemini-4-hydrogen', 'gemini-3.1-flash-lite', 'gemini-3-flash-preview', 'gemini-3.5-flash'];
   if (!allowedModels.includes(model) || !contents) {
     return res.status(400).json({ error: 'La solicitud de IA no es válida.' });
   }
-  try {
-    const ai = new GoogleGenAI({
-      apiKey,
-      apiVersion: 'v1beta',
-      httpOptions: {
-        headers: {
-          'User-Agent': 'aistudio-build',
-        },
+
+  const ai = new GoogleGenAI({
+    apiKey,
+    apiVersion: 'v1beta',
+    httpOptions: {
+      headers: {
+        'User-Agent': 'aistudio-build',
       },
-    });
-    const result = await ai.models.generateContent({ model, contents, config });
-    return res.json({ text: result.text || '' });
-  } catch (err: any) {
-    const status = Number(err?.status || err?.code) || 500;
-    const rawMsg = typeof err?.message === 'string' ? err.message : '';
-    console.error('[Gemini] Error al procesar solicitud:', status, rawMsg);
-    if (status === 429) {
-      return res.status(429).json({ error: 'Límite temporal de IA alcanzado (429). Intenta en unos segundos.' });
+    },
+  });
+
+  // Orden de intentos: modelo solicitado, breve reintento y fallback de respaldo ante picos 503
+  const candidateModels = [
+    model,
+    model,
+    ...(model !== 'gemini-4-hydrogen' ? ['gemini-4-hydrogen'] : []),
+    'gemini-3.1-flash-lite',
+  ];
+
+  let lastErr: any = null;
+  for (let i = 0; i < candidateModels.length; i++) {
+    const activeModel = candidateModels[i];
+    try {
+      const result = await ai.models.generateContent({ model: activeModel, contents, config });
+      return res.json({ text: result.text || '' });
+    } catch (err: any) {
+      lastErr = err;
+      const status = Number(err?.status || err?.code) || 500;
+      console.warn(`[Gemini] Intento ${i + 1} (${activeModel}) falló con estado ${status}`);
+      const isTransient = status === 503 || status === 429 || status === 500;
+      if (!isTransient) break;
+      if (i < candidateModels.length - 1) {
+        await new Promise((resolve) => setTimeout(resolve, 450 * (i + 1)));
+      }
     }
-    if (status === 401 || status === 403) {
-      return res.status(500).json({ error: 'La clave de IA del servidor no tiene permisos o no es válida.' });
-    }
-    const cleanReason = rawMsg.replace(/AIza[0-9A-Za-z_-]+/g, '[redacted]').slice(0, 140);
-    return res.status(500).json({
-      error: cleanReason
-        ? `El servicio de IA devolvió un error (${status}): ${cleanReason}`
-        : 'El servicio de IA no pudo completar la solicitud.',
+  }
+
+  const finalStatus = Number(lastErr?.status || lastErr?.code) || 500;
+  const rawMsg = typeof lastErr?.message === 'string' ? lastErr.message : '';
+  console.error('[Gemini] Error final al procesar solicitud:', finalStatus, rawMsg);
+
+  if (finalStatus === 503) {
+    return res.status(503).json({
+      error: 'El servicio de IA está con alta demanda en este momento. Toca "Nueva foto" nuevamente en unos segundos.',
     });
   }
+  if (finalStatus === 429) {
+    return res.status(429).json({ error: 'Límite temporal de IA alcanzado (429). Intenta en unos segundos.' });
+  }
+  if (finalStatus === 401 || finalStatus === 403) {
+    return res.status(500).json({ error: 'La clave de IA del servidor no tiene permisos o no es válida.' });
+  }
+  return res.status(500).json({
+    error: `El servicio de IA no pudo completar la solicitud (${finalStatus}). Intenta nuevamente.`,
+  });
 });
 
 app.post('/api/lookup-barcodes', async (req, res) => {
