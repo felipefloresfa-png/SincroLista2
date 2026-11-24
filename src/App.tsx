@@ -4,7 +4,7 @@
  */
 
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
-import { Type } from "@google/genai";
+import { Type, ThinkingLevel } from "@google/genai";
 import { 
   onAuthStateChanged, 
   signInWithPopup, 
@@ -229,7 +229,7 @@ const fileToGenerativePart = async (file: File) => {
     width: number,
     height: number
   ) => {
-    const scale = Math.min(1, 1400 / width, 3600 / height);
+    const scale = Math.min(1, 1200 / width, 2800 / height);
     const canvas = document.createElement('canvas');
     canvas.width = Math.max(1, Math.round(width * scale));
     canvas.height = Math.max(1, Math.round(height * scale));
@@ -240,7 +240,7 @@ const fileToGenerativePart = async (file: File) => {
       canvas.toBlob(
         blob => (blob ? resolve(blob) : reject(new Error('No se pudo comprimir la imagen.'))),
         'image/jpeg',
-        0.85
+        0.82
       );
     });
     const data = await new Promise<string>((resolve, reject) => {
@@ -314,6 +314,7 @@ Responde estrictamente en JSON: {'total': number, 'comercio': 'string', 'fecha':
       model: "gemini-4-hydrogen",
       contents: { parts: [{ text: prompt }, imagePart] },
       config: {
+        thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
         responseMimeType: "application/json",
         responseSchema: {
           type: Type.OBJECT,

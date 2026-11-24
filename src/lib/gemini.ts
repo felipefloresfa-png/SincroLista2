@@ -5,12 +5,30 @@ export async function generateAIContent(request: Record<string, any>): Promise<{
   const user = auth.currentUser;
   if (!user) throw new Error("Inicia sesión para usar las funciones de IA.");
   const idToken = await user.getIdToken();
-  const response = await fetch("/api/gemini", {
-    method: "POST",
-    credentials: "same-origin",
-    headers: { "Content-Type": "application/json", Authorization: `Bearer ${idToken}` },
-    body: JSON.stringify(request),
-  });
+
+  let response: Response | null = null;
+  let lastFetchErr: any = null;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      response = await fetch("/api/gemini", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${idToken}` },
+        body: JSON.stringify(request),
+      });
+      break;
+    } catch (err: any) {
+      lastFetchErr = err;
+      if (attempt === 0) {
+        await new Promise((r) => setTimeout(r, 700));
+      }
+    }
+  }
+
+  if (!response) {
+    console.warn("[Gemini] Error de red al contactar /api/gemini:", lastFetchErr);
+    throw new Error("La conexión con el servidor se interrumpió o tardó demasiado. Intenta nuevamente.");
+  }
 
   const rawBody = await response.text();
   const trimmed = rawBody.trimStart();

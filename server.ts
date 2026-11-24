@@ -73,13 +73,9 @@ app.post('/api/gemini', async (req, res) => {
     },
   });
 
-  // Orden de intentos: modelo solicitado, breve reintento y fallback de respaldo ante picos 503
-  const candidateModels = [
-    model,
-    model,
-    ...(model !== 'gemini-4-hydrogen' ? ['gemini-4-hydrogen'] : []),
-    'gemini-3.1-flash-lite',
-  ];
+  // Máximo 2 intentos rápidos (principal + respaldo) para no agotar el timeout de red móvil
+  const fallbackModel = model === 'gemini-4-hydrogen' ? 'gemini-3.1-flash-lite' : 'gemini-4-hydrogen';
+  const candidateModels = [model, fallbackModel];
 
   let lastErr: any = null;
   for (let i = 0; i < candidateModels.length; i++) {
@@ -94,7 +90,7 @@ app.post('/api/gemini', async (req, res) => {
       const isTransient = status === 503 || status === 429 || status === 500;
       if (!isTransient) break;
       if (i < candidateModels.length - 1) {
-        await new Promise((resolve) => setTimeout(resolve, 450 * (i + 1)));
+        await new Promise((resolve) => setTimeout(resolve, 350));
       }
     }
   }
