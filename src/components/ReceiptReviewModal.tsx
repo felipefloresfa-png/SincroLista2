@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import {
   Camera,
   Check,
+  Loader2,
   Plus,
   Receipt,
   Sparkles,
@@ -22,7 +23,8 @@ interface ReceiptReviewModalProps {
   initialTotalCost: number;
   initialItems: ReviewableReceiptItem[];
   onClose: () => void;
-  onRescanPhoto?: () => void;
+  onRescanFile?: (file: File) => Promise<void>;
+  isRescanning?: boolean;
   onLookupItemBarcode?: (barcode: string, rawName: string, storeName: string) => Promise<{
     resolvedName: string;
     source: string;
@@ -49,7 +51,8 @@ export function ReceiptReviewModal({
   initialTotalCost,
   initialItems,
   onClose,
-  onRescanPhoto,
+  onRescanFile,
+  isRescanning = false,
   onLookupItemBarcode,
   onSave,
 }: ReceiptReviewModalProps) {
@@ -231,8 +234,16 @@ export function ReceiptReviewModal({
             </label>
           </div>
 
+          {/* Banner de análisis en curso */}
+          {isRescanning && (
+            <div className="flex items-center gap-3 bg-accent/10 border border-accent/20 rounded-2xl px-4 py-3 text-xs font-semibold text-accent">
+              <Loader2 className="w-4 h-4 animate-spin shrink-0" />
+              <span>Leyendo la foto de la boleta y verificando códigos...</span>
+            </div>
+          )}
+
           {/* Barra de ayuda rápida si se detectaron descuentos o ítems nuevos */}
-          {(nonProductCount > 0 || flaggedNewCount > 0 || onRescanPhoto) && (
+          {(nonProductCount > 0 || flaggedNewCount > 0 || onRescanFile) && (
             <div className="flex flex-wrap items-center justify-between gap-2 bg-gray-50 border border-border rounded-2xl px-3.5 py-2.5 text-xs">
               <div className="text-text-secondary space-y-0.5">
                 {nonProductCount > 0 && (
@@ -255,21 +266,39 @@ export function ReceiptReviewModal({
                   <button
                     type="button"
                     onClick={handleRemoveNonProducts}
-                    className="min-h-[36px] px-3 py-1.5 bg-amber-100 hover:bg-amber-200 text-amber-900 font-semibold rounded-xl inline-flex items-center gap-1.5 cursor-pointer"
+                    disabled={isRescanning}
+                    className="min-h-[36px] px-3 py-1.5 bg-amber-100 hover:bg-amber-200 disabled:opacity-50 text-amber-900 font-semibold rounded-xl inline-flex items-center gap-1.5 cursor-pointer"
                   >
                     <Sparkles className="w-3.5 h-3.5" />
                     <span>Quitar descuentos ({nonProductCount})</span>
                   </button>
                 )}
-                {onRescanPhoto && (
-                  <button
-                    type="button"
-                    onClick={onRescanPhoto}
-                    className="min-h-[36px] px-3 py-1.5 bg-white border border-border hover:border-accent text-text-main font-semibold rounded-xl inline-flex items-center gap-1.5 cursor-pointer"
+                {onRescanFile && (
+                  <label
+                    className={`min-h-[36px] px-3 py-1.5 bg-white border border-border hover:border-accent text-text-main font-semibold rounded-xl inline-flex items-center gap-1.5 transition-colors ${
+                      isRescanning || isSaving ? 'opacity-50 pointer-events-none' : 'cursor-pointer'
+                    }`}
                   >
-                    <Camera className="w-3.5 h-3.5 text-accent" />
-                    <span>Nueva foto</span>
-                  </button>
+                    {isRescanning ? (
+                      <Loader2 className="w-3.5 h-3.5 text-accent animate-spin" />
+                    ) : (
+                      <Camera className="w-3.5 h-3.5 text-accent" />
+                    )}
+                    <span>{isRescanning ? 'Leyendo...' : 'Nueva foto'}</span>
+                    <input
+                      type="file"
+                      accept="image/*"
+                      className="sr-only"
+                      disabled={isRescanning || isSaving}
+                      onChange={async (e) => {
+                        const selected = e.target.files?.[0];
+                        e.currentTarget.value = '';
+                        if (selected) {
+                          await onRescanFile(selected);
+                        }
+                      }}
+                    />
+                  </label>
                 )}
               </div>
             </div>

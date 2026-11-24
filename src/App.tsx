@@ -224,19 +224,24 @@ const COMMON_CATEGORIES = [
 
 const fileToGenerativePart = async (file: File) => {
   // Reducir las fotos antes de enviarlas para respetar el límite del endpoint serverless.
-  try {
-    const bitmap = await createImageBitmap(file);
-    // Mantener nitidez horizontal en boletas largas verticales (hasta 1600px de ancho)
-    const scale = Math.min(1, 1600 / bitmap.width, 4096 / bitmap.height);
+  const drawToCompressedJpeg = async (
+    source: ImageBitmap | HTMLImageElement,
+    width: number,
+    height: number
+  ) => {
+    const scale = Math.min(1, 1400 / width, 3600 / height);
     const canvas = document.createElement('canvas');
-    canvas.width = Math.round(bitmap.width * scale);
-    canvas.height = Math.round(bitmap.height * scale);
+    canvas.width = Math.max(1, Math.round(width * scale));
+    canvas.height = Math.max(1, Math.round(height * scale));
     const context = canvas.getContext('2d');
     if (!context) throw new Error('No se pudo preparar la imagen.');
-    context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
-    bitmap.close();
+    context.drawImage(source, 0, 0, canvas.width, canvas.height);
     const compressed = await new Promise<Blob>((resolve, reject) => {
-      canvas.toBlob(blob => blob ? resolve(blob) : reject(new Error('No se pudo comprimir la imagen.')), 'image/jpeg', 0.9);
+      canvas.toBlob(
+        blob => (blob ? resolve(blob) : reject(new Error('No se pudo comprimir la imagen.'))),
+        'image/jpeg',
+        0.85
+      );
     });
     const data = await new Promise<string>((resolve, reject) => {
       const reader = new FileReader();
@@ -245,14 +250,42 @@ const fileToGenerativePart = async (file: File) => {
       reader.readAsDataURL(compressed);
     });
     return { inlineData: { data, mimeType: 'image/jpeg' } };
+  };
+
+  try {
+    const bitmap = await createImageBitmap(file);
+    try {
+      return await drawToCompressedJpeg(bitmap, bitmap.width, bitmap.height);
+    } finally {
+      bitmap.close();
+    }
   } catch {
-    const data = await new Promise<string>((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onloadend = () => resolve((reader.result as string).split(',')[1]);
-      reader.onerror = () => reject(reader.error);
-      reader.readAsDataURL(file);
-    });
-    return { inlineData: { data, mimeType: file.type || 'image/jpeg' } };
+    try {
+      const objectUrl = URL.createObjectURL(file);
+      try {
+        const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+          const el = new Image();
+          el.onload = () => resolve(el);
+          el.onerror = () => reject(new Error('No se pudo decodificar la imagen.'));
+          el.src = objectUrl;
+        });
+        return await drawToCompressedJpeg(
+          img,
+          img.naturalWidth || img.width,
+          img.naturalHeight || img.height
+        );
+      } finally {
+        URL.revokeObjectURL(objectUrl);
+      }
+    } catch {
+      const data = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onloadend = () => resolve((reader.result as string).split(',')[1]);
+        reader.onerror = () => reject(reader.error);
+        reader.readAsDataURL(file);
+      });
+      return { inlineData: { data, mimeType: file.type || 'image/jpeg' } };
+    }
   }
 };
 
@@ -746,8 +779,6 @@ export default function App() {
       addNotification("Error al enviar el reporte.", "error");
     }
   };
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  const scanningTargetIdRef = useRef<string | null>(null);
   const [receiptReview, setReceiptReview] = useState<{
     isOpen: boolean;
     mode: 'scan_review' | 'history_edit';
@@ -758,21 +789,24 @@ export default function App() {
     items: ReviewableReceiptItem[];
   } | null>(null);
 
-  const handleScanReceipt = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file || !profile?.familyId || !db) return;
+  const handleScanReceiptFile = async (file: File, targetId: string | null = null) => {
+    if (!file) return;
+    if (!profile?.familyId || !db) {
+      addNotification("Espera un momento a que cargue tu sesión e intenta nuevamente.", "error");
+      return;
+    }
 
-    const targetId = scanningTargetIdRef.current ?? scanningTargetId;
     const targetEntry = targetId ? history.find(h => h.id === targetId) : null;
     const originalItems = Array.isArray(targetEntry?.items) ? targetEntry.items : [];
     const originalNames = originalItems
       .map((it: any) => (typeof it === 'string' ? it : it?.name))
       .filter(Boolean);
 
+    setScanningTargetId(targetId);
     setIsScanning(true);
     try {
       const data = await processReceipt(file, originalNames);
-      
+
       if (data.error) {
         addNotification(data.errorMessage || "No se pudo leer la boleta. Intenta con una foto más clara.", "error");
         return;
@@ -806,8 +840,18 @@ export default function App() {
         .map((it) => ({ barcode: it.barcode!, rawText: it.name }));
 
       if (barcodeCandidates.length > 0) {
-        const lookupMap = await lookupBarcodes(barcodeCandidates, safeStoreName);
-        resolvedItems = applyBarcodeLookups(resolvedItems, lookupMap);
+        try {
+          const timeoutPromise = new Promise<Record<string, any>>((resolve) =>
+            setTimeout(() => resolve({}), 8000)
+          );
+          const lookupMap = await Promise.race([
+            lookupBarcodes(barcodeCandidates, safeStoreName),
+            timeoutPromise,
+          ]);
+          resolvedItems = applyBarcodeLookups(resolvedItems, lookupMap);
+        } catch {
+          // Si falla la búsqueda por código, igual abrimos la revisión con lo leído
+        }
       }
 
       const baseItems = resolvedItems.length > 0 ? resolvedItems : originalItems;
@@ -827,9 +871,7 @@ export default function App() {
       addNotification(err?.message || "Error al procesar la boleta", "error");
     } finally {
       setIsScanning(false);
-      scanningTargetIdRef.current = null;
       setScanningTargetId(null);
-      if (fileInputRef.current) fileInputRef.current.value = '';
     }
   };
 
@@ -3007,15 +3049,7 @@ export default function App() {
               }}
               history={history}
               loading={historyLoading}
-              onScanClick={(id) => {
-                const targetId = id || null;
-                scanningTargetIdRef.current = targetId;
-                setScanningTargetId(targetId);
-                if (fileInputRef.current) {
-                  fileInputRef.current.value = '';
-                  fileInputRef.current.click();
-                }
-              }}
+              onScanFile={(id, file) => handleScanReceiptFile(file, id || null)}
               isScanning={isScanning}
               scanningTargetId={scanningTargetId}
               onEditEntry={handleOpenHistoryEdit}
@@ -3932,16 +3966,6 @@ export default function App() {
         </div>
       )}
 
-      {/* Input oculto para escanear o vincular boletas desde el Historial */}
-      <input
-        ref={fileInputRef}
-        type="file"
-        accept="image/*"
-        onChange={handleScanReceipt}
-        className="hidden"
-        aria-hidden="true"
-      />
-
       {/* Modal de revisión/edición de boleta antes de guardar */}
       {receiptReview && (
         <ReceiptReviewModal
@@ -3950,21 +3974,11 @@ export default function App() {
           initialStoreName={receiptReview.storeName}
           initialTotalCost={receiptReview.totalCost}
           initialItems={receiptReview.items}
+          isRescanning={isScanning}
           onClose={() => setReceiptReview(null)}
-          onRescanPhoto={
-            receiptReview.targetId
-              ? () => {
-                  const targetId = receiptReview.targetId;
-                  setReceiptReview(null);
-                  scanningTargetIdRef.current = targetId;
-                  setScanningTargetId(targetId);
-                  if (fileInputRef.current) {
-                    fileInputRef.current.value = '';
-                    fileInputRef.current.click();
-                  }
-                }
-              : undefined
-          }
+          onRescanFile={async (file) => {
+            await handleScanReceiptFile(file, receiptReview.targetId);
+          }}
           onLookupItemBarcode={async (barcode, rawName, storeName) => {
             const res = await lookupBarcodes([{ barcode, rawText: rawName }], storeName);
             const match = res[barcode];
@@ -5268,7 +5282,7 @@ function StatsDashboard({ onOpenMenu, history }: { onOpenMenu: () => void, histo
   );
 }
 
-function PurchaseHistoryView({ onOpenMenu, profile, onAddItem, onRepeatPurchase, currentItems, history, loading, onScanClick, isScanning, scanningTargetId, onEditEntry, onDeleteHistoryEntry }: { 
+function PurchaseHistoryView({ onOpenMenu, profile, onAddItem, onRepeatPurchase, currentItems, history, loading, onScanFile, isScanning, scanningTargetId, onEditEntry, onDeleteHistoryEntry }: { 
   onOpenMenu: () => void, 
   profile: UserProfile,
   currentItems: GroceryItem[],
@@ -5276,7 +5290,7 @@ function PurchaseHistoryView({ onOpenMenu, profile, onAddItem, onRepeatPurchase,
   onRepeatPurchase: (items: any[]) => void,
   history: any[],
   loading: boolean,
-  onScanClick: (id?: string) => void,
+  onScanFile: (id: string, file: File) => void,
   isScanning: boolean,
   scanningTargetId: string | null,
   onEditEntry: (entry: any) => void,
@@ -5311,6 +5325,13 @@ function PurchaseHistoryView({ onOpenMenu, profile, onAddItem, onRepeatPurchase,
             </div>
           </div>
         </div>
+
+        {isScanning && (
+          <div className="flex items-center gap-3 bg-accent/10 border border-accent/20 rounded-2xl px-4 py-3 text-xs font-semibold text-accent">
+            <Loader2 className="w-4 h-4 animate-spin shrink-0" />
+            <span>Leyendo la boleta y verificando códigos...</span>
+          </div>
+        )}
 
         {loading ? (
           <div className="flex flex-col items-center justify-center py-20 gap-4">
@@ -5376,11 +5397,10 @@ function PurchaseHistoryView({ onOpenMenu, profile, onAddItem, onRepeatPurchase,
                     
                     <div className="flex flex-col sm:flex-row items-center gap-2">
                       {!entry.totalCost && (
-                        <button
-                          onClick={() => onScanClick(entry.id)}
-                          disabled={isScanning}
+                        <label
                           className={cn(
                             "w-full sm:w-auto flex items-center justify-center gap-2 px-4 py-2 bg-accent/10 text-accent rounded-xl text-[10px] font-black uppercase tracking-wider hover:bg-accent hover:text-white transition-all active:scale-95",
+                            isScanning ? "opacity-60 pointer-events-none" : "cursor-pointer",
                             isScanning && scanningTargetId === entry.id && "animate-pulse"
                           )}
                         >
@@ -5395,7 +5415,20 @@ function PurchaseHistoryView({ onOpenMenu, profile, onAddItem, onRepeatPurchase,
                               Vincular Boleta
                             </>
                           )}
-                        </button>
+                          <input
+                            type="file"
+                            accept="image/*"
+                            className="sr-only"
+                            disabled={isScanning}
+                            onChange={(e) => {
+                              const selected = e.target.files?.[0];
+                              e.currentTarget.value = '';
+                              if (selected) {
+                                onScanFile(entry.id, selected);
+                              }
+                            }}
+                          />
+                        </label>
                       )}
 
                       <button
